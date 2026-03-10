@@ -1,22 +1,23 @@
-# 1. Use an official Node.js runtime as a parent image
-FROM node:18-slim
+# Use a full version of Node to ensure all build tools are available
+FROM node:18
 
-# 2. Install FFmpeg and essential build tools
+# Install FFmpeg and other essentials
 RUN apt-get update && apt-get install -y \
     ffmpeg \
-    libwebp-dev \
-    python3 \
+    imagemagick \
     && rm -rf /var/lib/apt/lists/*
 
-# 3. Set the working directory
-WORKDIR /app
+# Create app directory
+WORKDIR /usr/src/app
 
-# 4. Copy package files and install dependencies
+# Copy package files FIRST (this helps with caching)
 COPY package*.json ./
+
+# Install dependencies
 RUN npm install
 
-# 5. Copy the rest of your bot's code
+# Bundle app source
 COPY . .
 
-# 6. Start the bot
-CMD ["node", "index.js"]
+# Start the bot
+CMD [ "node", "index.js" ]
