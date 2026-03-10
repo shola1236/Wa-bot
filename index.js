@@ -55,7 +55,9 @@ const sock=makeWASocket({
 version,
 logger:pino({level:"silent"}),
 auth:state,
-printQRInTerminal:false
+printQRInTerminal:false,
+// --- 1. FIX APPLIED: BROWSER CONFIG ---
+browser: ["Ubuntu", "Chrome", "20.0.04"]
 })
 
 sock.ev.on("creds.update",saveCreds)
@@ -80,7 +82,6 @@ webPairingCode = "✅ Bot is successfully connected to WhatsApp!"
 
 })
 
-// --- FIX APPLIED HERE ONLY ---
 if(!sock.authState.creds.registered){
     setTimeout(async () => {
         console.log("⚠️ Pairing")
@@ -95,7 +96,6 @@ if(!sock.authState.creds.registered){
         }
     }, 5000) 
 }
-// --- END OF FIX ---
 
 sock.ev.on("group-participants.update",async(data)=>{
 
@@ -141,9 +141,14 @@ msg.message.extendedTextMessage?.text||
 
 const command=text.split(" ")[0].toLowerCase()
 
-// BLOCK NON OWNER
+// --- 2. FIX APPLIED: EXACT OWNER MATCH FOR "MESSAGE YOURSELF" ---
+// We extract just the numbers from the sender and owner.
+// This prevents bugs where WhatsApp adds ":1" or ":2" to your JID when messaging yourself.
+const senderClean = sender.split("@")[0].split(":")[0];
+const ownerClean = OWNER_NUMBER.replace(/[^0-9]/g,"");
 
-if(sender!==OWNER && command.startsWith(".")){
+// BLOCK NON OWNER
+if(senderClean !== ownerClean && command.startsWith(".")){
 return
 }
 
@@ -331,7 +336,6 @@ mentions
 
 }
 
-// --- UPDATED ROUTE TO SHOW CODE ON WEB ---
 app.get("/",(req,res)=>{
 res.send(`
     <div style="font-family: Arial, sans-serif; padding: 20px; text-align: center;">
