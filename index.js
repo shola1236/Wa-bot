@@ -23,6 +23,9 @@ process.exit(1)
 
 const OWNER = OWNER_NUMBER.replace(/[^0-9]/g,"")+"@s.whatsapp.net"
 
+// Variable to store the code so we can show it on the webpage
+let webPairingCode = "Waiting for code to generate... Refresh the page in a few seconds.";
+
 async function askGemini(prompt){
 
 try{
@@ -72,6 +75,7 @@ if(shouldReconnect) startBot()
 
 if(connection==="open"){
 console.log("✅ WhatsApp connected")
+webPairingCode = "✅ Bot is successfully connected to WhatsApp!"
 }
 
 })
@@ -84,8 +88,10 @@ if(!sock.authState.creds.registered){
         try {
             const code=await sock.requestPairingCode(cleaned)
             console.log("🔥 PAIR CODE:",code)
+            webPairingCode = `🔥 PAIR CODE: ${code}` // Save to show on website
         } catch (e) {
             console.log("Retry pairing in next restart...")
+            webPairingCode = "❌ Error generating code. Check Render logs."
         }
     }, 5000) 
 }
@@ -325,8 +331,14 @@ mentions
 
 }
 
+// --- UPDATED ROUTE TO SHOW CODE ON WEB ---
 app.get("/",(req,res)=>{
-res.send("Bot running")
+res.send(`
+    <div style="font-family: Arial, sans-serif; padding: 20px; text-align: center;">
+        <h1>WhatsApp Bot Status</h1>
+        <h2>${webPairingCode}</h2>
+    </div>
+`)
 })
 
 app.listen(PORT,()=>{
