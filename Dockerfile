@@ -1,5 +1,5 @@
 # Use a full version of Node to ensure all build tools are available
-FROM node:18
+FROM node:20
 
 # Install FFmpeg and other essentials
 RUN apt-get update && apt-get install -y \
