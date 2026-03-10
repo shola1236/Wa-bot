@@ -1,0 +1,38 @@
+{
+  "name": "vantage-wa-bot",
+  "version": "1.0.0",
+  "description": "Multi-feature WhatsApp Bot with View-Once Bypass and AI",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "baileys",
+    "gemini",
+    "ai"
+  ],
+  "author": "shola",
+  "license": "ISC",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.6.0",
+    "@google/generative-ai": "^0.3.0",
+    "pino": "^9.0.0",
+    "qrcode-terminal": "^0.12.0",
+    "express": "^4.19.0",
+    "axios": "^1.6.8",
+    "fluent-ffmpeg": "^2.1.2",
+    "form-data": "^4.0.0",
+    "mime-types": "^2.1.35",
+    "node-fetch": "^2.7.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
