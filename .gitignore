@@ -1,0 +1,20 @@
+# 📦 Dependencies
+node_modules/
+
+# 🔐 SENSITIVE DATA (CRITICAL)
+# This folder contains your actual WhatsApp login. 
+# Keep it in .gitignore unless your repo is PRIVATE.
+auth_info/
+.env
+
+# 🖼️ Temporary Media Files
+# These are generated when making stickers or downloading videos
+temp.jpg
+sticker.webp
+*.mp4
+*.mp3
+
+# 📂 Logs and System Files
+*.log
+npm-debug.log*
+.DS_Store
