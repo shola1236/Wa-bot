@@ -1,3 +1,4 @@
+require('dotenv').config();
 const { 
     default: makeWASocket, 
     useMultiFileAuthState, 
@@ -11,22 +12,30 @@ const ytdl = require("ytdl-core");
 const ffmpeg = require("fluent-ffmpeg");
 const pino = require("pino");
 const express = require("express");
-const readline = require("readline");
 const fs = require("fs");
+const axios = require("axios");
+const readline = require("readline");
 
-// --- CONFIG ---
+// --- CONFIGURATION ---
 const app = express();
 const PORT = process.env.PORT || 3000;
 const prefix = "."; 
+const botNumber = process.env.BOT_NUMBER; 
+const renderUrl = process.env.RENDER_URL; // e.g., https://your-app.onrender.com
+
+// --- AI SETUP ---
+const apiKey = process.env.GEMINI_KEY;
+if (!apiKey) console.warn("⚠️ WARNING: GEMINI_KEY missing. AI features will be disabled.");
+const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
+const aiModel = genAI ? genAI.getGenerativeModel({ model: "gemini-1.5-flash" }) : null;
+
+// For local testing fallback
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 const question = (text) => new Promise((resolve) => rl.question(text, resolve));
 
-// --- AI SETUP ---
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_KEY || "YOUR_KEY_HERE");
-const aiModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
 async function startVantageBot() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
+    
     const sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
@@ -36,14 +45,24 @@ async function startVantageBot() {
 
     // 🔑 PAIRING CODE LOGIC
     if (!sock.authState.creds.registered) {
-        const phoneNumber = await question("Enter your WhatsApp number (e.g. 234810xxxx): ");
-        const code = await sock.requestPairingCode(phoneNumber.replace(/[^\d]/g, ''));
-        console.log(`\n🔥 YOUR PAIRING CODE: ${code}\n`);
+        console.log("⚠️ Not registered. Starting Pairing Process...");
+        const phoneNumber = botNumber || await question("Enter your WhatsApp number (e.g. 234810xxxx): ");
+        const cleanedNumber = phoneNumber.replace(/[^\d]/g, '');
+        
+        setTimeout(async () => {
+            const code = await sock.requestPairingCode(cleanedNumber);
+            console.log(`\n🔥 YOUR PAIRING CODE: ${code}\n`);
+        }, 3000);
     }
 
     sock.ev.on('creds.update', saveCreds);
     sock.ev.on('connection.update', (up) => { 
-        if (up.connection === 'open') console.log("✅ Vantage Master Bot Online!"); 
+        const { connection, lastDisconnect } = up;
+        if (connection === 'open') console.log("✅ Vantage Bot Online!"); 
+        else if (connection === 'close') {
+            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            if (shouldReconnect) startVantageBot();
+        }
     });
 
     sock.ev.on('messages.upsert', async ({ messages }) => {
@@ -53,7 +72,7 @@ async function startVantageBot() {
         const jid = msg.key.remoteJid;
         const isGroup = jid.endsWith('@g.us');
         
-        // Extract message type and content accurately
+        // Extract message type safely
         const type = getContentType(msg.message);
         let body = "";
         if (type === 'conversation') body = msg.message.conversation;
@@ -61,7 +80,7 @@ async function startVantageBot() {
         else if (type === 'imageMessage') body = msg.message.imageMessage.caption || "";
         else if (type === 'videoMessage') body = msg.message.videoMessage.caption || "";
 
-        // 🔓 AUTO VIEW-ONCE BYPASS
+        // 🔓 1. AUTO VIEW-ONCE BYPASS
         if (type === 'viewOnceMessageV2' || type === 'viewOnceMessage') {
             await sock.sendMessage(sock.user.id, { forward: msg, caption: "🔓 Bypassed View-Once" });
         }
@@ -72,50 +91,44 @@ async function startVantageBot() {
         const command = body.slice(prefix.length).trim().split(" ")[0].toLowerCase();
         const args = body.trim().split(" ").slice(1);
 
-        // --- COMMAND LOGIC ---
+        // --- COMMANDS ---
         switch (command) {
             
-            // 🤖 1. AI CHAT
+            // 🤖 AI CHAT
             case 'ai':
-                if (!args.length) return sock.sendMessage(jid, { text: "❌ What should I ask the AI? Example: .ai write a poem" });
+                if (!aiModel) return sock.sendMessage(jid, { text: "❌ AI is disabled (Missing API Key)." });
+                if (!args.length) return sock.sendMessage(jid, { text: "❌ Ask something! Example: .ai what is Next.js?" });
                 try {
                     const result = await aiModel.generateContent(args.join(" "));
                     await sock.sendMessage(jid, { text: result.response.text() });
                 } catch (e) {
-                    await sock.sendMessage(jid, { text: "❌ AI Error: Check your API Key or rate limits." });
+                    await sock.sendMessage(jid, { text: "❌ AI Error: Please try again later." });
                 }
                 break;
 
-            // 📥 2. YOUTUBE VIDEO DOWNLOADER
+            // 📥 YOUTUBE DOWNLOADER
             case 'video':
             case 'yt':
                 const url = args[0];
-                if (!url || !ytdl.validateURL(url)) {
-                    return sock.sendMessage(jid, { text: "❌ Send a valid YouTube URL. Example: .video https://youtube.com/..." });
-                }
+                if (!url || !ytdl.validateURL(url)) return sock.sendMessage(jid, { text: "❌ Send a valid YouTube URL." });
                 await sock.sendMessage(jid, { text: "📥 Downloading video... Please wait." });
                 try {
                     const stream = ytdl(url, { filter: 'audioandvideo', quality: 'highest' });
                     await sock.sendMessage(jid, { video: { stream: stream }, caption: "🎥 Downloaded via Vantage Bot" });
                 } catch (e) {
-                    await sock.sendMessage(jid, { text: "❌ Failed to download video. It might be age-restricted or too large." });
+                    await sock.sendMessage(jid, { text: "❌ Failed to download. Video might be too large." });
                 }
                 break;
 
-            // 🎨 3. STICKER MAKER
+            // 🎨 STICKER MAKER
             case 's':
             case 'sticker':
-                // Check if user replied to an image OR sent an image with the caption .s
                 const isImage = type === 'imageMessage';
                 const isQuotedImage = type === 'extendedTextMessage' && msg.message.extendedTextMessage.contextInfo?.quotedMessage?.imageMessage;
                 
-                if (!isImage && !isQuotedImage) {
-                    return sock.sendMessage(jid, { text: "❌ Please send or reply to an image with .s" });
-                }
+                if (!isImage && !isQuotedImage) return sock.sendMessage(jid, { text: "❌ Reply to an image with .s" });
 
-                await sock.sendMessage(jid, { text: "🎨 Making sticker..." });
-                
-                // Get the image payload
+                await sock.sendMessage(jid, { text: "🎨 Processing..." });
                 const imageMessage = isImage ? msg.message.imageMessage : msg.message.extendedTextMessage.contextInfo.quotedMessage.imageMessage;
                 
                 try {
@@ -124,62 +137,72 @@ async function startVantageBot() {
                     for await (const chunk of stream) { buffer = Buffer.concat([buffer, chunk]); }
                     
                     fs.writeFileSync('temp.jpg', buffer);
-                    
-                    // Convert to WebP using FFmpeg
                     ffmpeg('temp.jpg')
                         .outputOptions(["-vcodec", "libwebp", "-vf", "scale='min(320,iw)':min'(320,ih)':force_original_aspect_ratio=decrease,fps=15, pad=320:320:-1:-1:color=white@0.0", "-lossless", "1"])
                         .save('sticker.webp')
                         .on('end', async () => {
                             await sock.sendMessage(jid, { sticker: fs.readFileSync('sticker.webp') });
-                            fs.unlinkSync('temp.jpg');
-                            fs.unlinkSync('sticker.webp');
+                            if (fs.existsSync('temp.jpg')) fs.unlinkSync('temp.jpg');
+                            if (fs.existsSync('sticker.webp')) fs.unlinkSync('sticker.webp');
                         });
                 } catch (e) {
                     await sock.sendMessage(jid, { text: "❌ Failed to create sticker." });
                 }
                 break;
 
-            // 👥 4. ADMIN & GROUP TOOLS
-            case 'promote': // .promote @user
+            // 👥 GROUP TOOLS
+            case 'promote':
                 if (!isGroup) return;
                 const promoteUser = msg.message.extendedTextMessage?.contextInfo?.mentionedJid[0] || args[0] + "@s.whatsapp.net";
                 await sock.groupParticipantsUpdate(jid, [promoteUser], "promote");
-                await sock.sendMessage(jid, { text: "✅ User promoted to Admin." });
+                await sock.sendMessage(jid, { text: "✅ Promoted." });
                 break;
 
-            case 'demote': // .demote @user
+            case 'demote':
                 if (!isGroup) return;
                 const demoteUser = msg.message.extendedTextMessage?.contextInfo?.mentionedJid[0] || args[0] + "@s.whatsapp.net";
                 await sock.groupParticipantsUpdate(jid, [demoteUser], "demote");
-                await sock.sendMessage(jid, { text: "❌ User demoted to Member." });
+                await sock.sendMessage(jid, { text: "❌ Demoted." });
                 break;
 
-            case 'lock': // .lock
+            case 'lock':
                 if (!isGroup) return;
                 await sock.groupSettingUpdate(jid, 'announcement');
-                await sock.sendMessage(jid, { text: "🔒 Group Locked: Only Admins can send messages." });
+                await sock.sendMessage(jid, { text: "🔒 Locked." });
                 break;
 
-            case 'unlock': // .unlock
+            case 'unlock':
                 if (!isGroup) return;
                 await sock.groupSettingUpdate(jid, 'not_announcement');
-                await sock.sendMessage(jid, { text: "🔓 Group Unlocked: Everyone can send messages." });
+                await sock.sendMessage(jid, { text: "🔓 Unlocked." });
                 break;
 
-            case 'hidetag': // .hidetag Your Message Here
+            case 'hidetag':
                 if (!isGroup) return;
                 const meta = await sock.groupMetadata(jid);
                 const users = meta.participants.map(u => u.id);
-                await sock.sendMessage(jid, { text: args.join(" ") || "Attention everyone!", mentions: users });
+                await sock.sendMessage(jid, { text: args.join(" ") || "Attention!", mentions: users });
                 break;
 
             case 'ping':
-                await sock.sendMessage(jid, { text: "Vantage Master Bot is Active 🟢\nPrefix: `.`" });
+                await sock.sendMessage(jid, { text: "🟢 Vantage Bot is Active (Shola's update)\nPrefix: `.`" });
                 break;
         }
     });
 }
 
-// Keep-Alive for Render
-app.get("/", (req, res) => res.send("Master Bot Status: Active"));
-app.listen(PORT, () => startVantageBot());
+// --- EXPRESS SERVER & KEEP-ALIVE ---
+app.get("/", (req, res) => res.send("Vantage Bot Server Running 🚀"));
+app.listen(PORT, () => {
+    console.log(`Web server listening on port ${PORT}`);
+    startVantageBot();
+    
+    // Self-ping to keep Render free tier awake
+    if (renderUrl) {
+        setInterval(() => {
+            axios.get(renderUrl)
+                .then(() => console.log("⚡ Self-ping successful!"))
+                .catch(() => console.error("⚠️ Self-ping failed."));
+        }, 14 * 60 * 1000); // 14 minutes
+    }
+});
