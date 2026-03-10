@@ -1,23 +1,22 @@
-# Use a full version of Node to ensure all build tools are available
-FROM node:18
+# 📦 Dependencies
+node_modules/
+package-lock.json
 
-# Install FFmpeg and other essentials
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    imagemagick \
-    && rm -rf /var/lib/apt/lists/*
+# 🔐 SENSITIVE DATA (CRITICAL)
+# This folder contains your actual WhatsApp login session.
+# Only upload this if your GitHub repo is PRIVATE.
+auth_info/
+.env
 
-# Create app directory
-WORKDIR /usr/src/app
+# 🖼️ Temporary Media Files
+# These are generated during sticker creation or video downloads
+temp.jpg
+sticker.webp
+*.mp4
+*.mp3
+*.tmp
 
-# Copy package files FIRST (this helps with caching)
-COPY package*.json ./
-
-# Install dependencies
-RUN npm install
-
-# Bundle app source
-COPY . .
-
-# Start the bot
-CMD [ "node", "index.js" ]
+# 📂 Logs and System Files
+*.log
+npm-debug.log*
+.DS_Store
