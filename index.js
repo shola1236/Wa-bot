@@ -16,7 +16,7 @@ const BOT_NUMBER = process.env.BOT_NUMBER
 const GEMINI_KEY = process.env.GEMINI_KEY
 const OWNER_NUMBER = process.env.OWNER_NUMBER
 
-// --- NEW LOGGING SYSTEM (For your website) ---
+// --- LOGGING SYSTEM ---
 let statusLogs = [];
 function addLog(msg) {
     const time = new Date().toLocaleTimeString();
@@ -109,7 +109,7 @@ addLog(`🔑 Pairing Code: ${code}`);
 } catch (e) {
 
 console.log("Retry pairing in next restart...")
-addLog("❌ Pairing failed. Check BOT_NUMBER.");
+addLog("❌ Pairing failed.");
 
 }
 
@@ -164,14 +164,18 @@ msg.message.extendedTextMessage?.text||
 
 const command=text.split(" ")[0].toLowerCase()
 
-// --- LOG MESSAGE ---
+// --- LOG MESSAGE TO WEBSITE ---
 if(text) addLog(`📩 ${sender.split('@')[0]}: ${text}`);
 
+// --- OWNER & BOT NUMBER CHECK ---
 const senderClean = sender.split("@")[0].split(":")[0];
 const ownerClean = OWNER_NUMBER.replace(/[^0-9]/g,"");
+const botClean = BOT_NUMBER.replace(/[^0-9]/g,"");
 
-// BLOCK NON OWNER
-if(senderClean !== ownerClean && command.startsWith(".")){
+// ALLOW if sender is Owner OR the Bot itself
+const isAllowed = (senderClean === ownerClean || senderClean === botClean);
+
+if(command.startsWith(".") && !isAllowed){
 addLog(`🚫 Blocked: ${senderClean}`);
 return
 }
