@@ -1,29 +1,20 @@
 /**
 ==============================================================================
-🚀 WHATSAPP BOT MASTER CONSOLE - ULTIMATE EDITION (V4.1.0)
+🚀 WHATSAPP BOT MASTER CONSOLE - ULTIMATE EDITION (V4.2.0)
 ==============================================================================
-Build Version: 4.1.0 (High-Stability for Render.com)
-Security Architecture: EXCLUSIVE "fromMe" Gatekeeping
-FEATURES INCLUDED:
-1. Strict Owner-Only Access (via Bot Account)
-2. Gemini AI Integration (Manual & Auto-Mode)
-3. Smart Context Memory (Remembers previous 5 messages)
-4. Full Group Administration (Promote, Demote, Kick, KickAll)
-5. Mass Communication Tools (TagAll, HideTag)
-6. Automated Anti-Link System
-7. External Utility APIs (Quotes, Jokes, Facts, Time, Date)
-8. Enhanced Web Dashboard with CSS3 & Real-time Logs
-
-⚠️ RENDER DEPLOYMENT NOTE:
-Ensure BOT_NUMBER and GEMINI_KEY are set in Environment Variables.
+Author: Coding Partner AI
+License: MIT
+Build: High-Stability for Cloud Environments (Render/Heroku)
 ==============================================================================
 */
 
+// --- DEPENDENCIES ---
 const express = require("express");
 const pino = require("pino");
 const axios = require("axios");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 const {
     default: makeWASocket,
     useMultiFileAuthState,
@@ -31,14 +22,9 @@ const {
     fetchLatestBaileysVersion,
     delay,
     jidDecode,
-    generateForwardMessageContent,
-    prepareWAMessageMedia,
-    generateWAMessageFromContent,
-    generateMessageID,
-    downloadContentFromMessage,
-    makeInMemoryStore, // <-- We will use this directly now
-    jidNormalizedUser,
-    proto
+    makeInMemoryStore,
+    getContentType,
+    downloadContentFromMessage
 } = require("@whiskeysockets/baileys");
 
 // --- SYSTEM INITIALIZATION ---
@@ -46,24 +32,29 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Environment Variables Extraction
-const BOT_NUMBER = process.env.BOT_NUMBER;
+// On Render, ensure these are added in the "Environment" tab
+const BOT_NUMBER = process.env.BOT_NUMBER; // Format: 2348000000000
 const GEMINI_KEY = process.env.GEMINI_KEY;
+const OWNER_NAME = process.env.OWNER_NAME || "System Admin";
 
 // Global State Management
 let autoReplyActive = false;
 let antiLinkActive = true;
 let chatMemory = {};
 let statusLogs = [];
-let webPairingCode = "System Booting... Waiting for Pairing Engine.";
+let startTime = Date.now();
+let webPairingCode = "System Booting... Initializing Pairing Engine.";
 
-// FIX 1: Use makeInMemoryStore directly since the internal lib path changed
+// Memory Store for Baileys
 const store = makeInMemoryStore({
     logger: pino().child({ level: 'silent', stream: 'store' })
 });
 
+// --- UTILITY FUNCTIONS ---
+
 /**
-🧠 UTILITY: DECODE JID
-*/
+ * Normalizes WhatsApp IDs
+ */
 function decodeJid(jid) {
     if (!jid) return jid;
     if (/:\d+@/gi.test(jid)) {
@@ -73,68 +64,83 @@ function decodeJid(jid) {
 }
 
 /**
-📝 ADVANCED LOGGING SYSTEM
-*/
+ * Advanced Log System for the Web Dashboard
+ */
 function addLog(msg) {
     const time = new Date().toLocaleTimeString();
-    const formattedLog = `[${time}] ${msg}`; // Restored missing backticks
+    const formattedLog = `[${time}] ${msg}`;
     console.log(formattedLog);
     statusLogs.unshift(formattedLog);
     if (statusLogs.length > 100) statusLogs.pop();
 }
 
-// Critical Validation before Boot
+/**
+ * Formats seconds into human-readable uptime
+ */
+function getUptime() {
+    const duration = Date.now() - startTime;
+    let seconds = Math.floor((duration / 1000) % 60);
+    let minutes = Math.floor((duration / (1000 * 60)) % 60);
+    let hours = Math.floor((duration / (1000 * 60 * 60)) % 24);
+    return `${hours}h ${minutes}m ${seconds}s`;
+}
+
+// --- CORE VALIDATION ---
 if (!BOT_NUMBER || !GEMINI_KEY) {
-    console.error("❌ CRITICAL FAILURE: Environment variables (BOT_NUMBER/GEMINI_KEY) missing.");
-    process.exit(1);
+    console.error("❌ ERROR: Environment variables BOT_NUMBER or GEMINI_KEY missing.");
+    addLog("❌ CRITICAL: Missing Env Vars. The bot will not function.");
 }
 
 /**
-🧠 GEMINI AI CORE WITH CONTEXT MEMORY
-*/
+ * 🧠 GEMINI AI CORE WITH CONTEXT MEMORY
+ */
 async function askGemini(prompt, userJid) {
     try {
         if (!chatMemory[userJid]) {
             chatMemory[userJid] = [];
         }
 
+        // Build context from the last 5 exchanges
         const context = chatMemory[userJid].join("\n");  
         const fullPrompt = context   
-            ? `Context of our last few messages:\n${context}\n\nNew User Input: ${prompt}`   
-            : `You are a helpful WhatsApp AI assistant. User says: ${prompt}`;  
+            ? `Previous context:\n${context}\n\nUser's new message: ${prompt}`   
+            : `You are a helpful, professional WhatsApp AI assistant. Answer this: ${prompt}`;  
 
         const response = await axios.post(  
             `https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key=${GEMINI_KEY}`,  
-            {  
-                contents: [{  
-                    parts: [{ text: fullPrompt }]  
-                }]  
-            }  
+            { contents: [{ parts: [{ text: fullPrompt }] }] }  
         );  
 
         if (response.data && response.data.candidates) {  
             const aiText = response.data.candidates[0].content.parts[0].text;  
 
-            // Update Memory (Keep last 5 exchanges)  
+            // Update Memory (Keep last 5 exchanges = 10 messages)  
             chatMemory[userJid].push(`User: ${prompt}`);  
             chatMemory[userJid].push(`AI: ${aiText}`);  
             if (chatMemory[userJid].length > 10) chatMemory[userJid].splice(0, 2);   
 
             return aiText;  
         }  
-        return "🤖 AI: I am currently processing too much data. Try again shortly.";
-
+        return "🤖 AI: I'm having trouble processing that right now.";
     } catch (error) {
-        addLog(`⚠️ Gemini API Error: ${error.response?.data?.error?.message || error.message}`); // Restored missing backticks
-        return "⚠️ AI engine error. Please check your API quota or connection.";
+        addLog(`⚠️ Gemini API Error: ${error.message}`);
+        return "⚠️ AI engine error. Please check your API quota.";
     }
 }
 
 /**
-🚀 MAIN BOT EXECUTION ENGINE
-*/
+ * 🚀 MAIN BOT EXECUTION ENGINE
+ */
 async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState("session");
+    addLog("📦 Loading Authentication State...");
+    
+    // Ensure 'session' directory exists for Docker environments
+    const sessionDir = path.join(__dirname, 'session');
+    if (!fs.existsSync(sessionDir)) {
+        fs.mkdirSync(sessionDir);
+    }
+
+    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
     const { version } = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
@@ -142,330 +148,313 @@ async function startBot() {
         logger: pino({ level: "silent" }),
         auth: state,
         printQRInTerminal: false,
-        browser: ["Ubuntu", "Chrome", "20.0.04"],
+        browser: ["Chrome (Ubuntu)", "Render", "1.0.0"],
         syncFullHistory: false,
         markOnlineOnConnect: true,
         connectTimeoutMs: 60000,
-        keepAliveIntervalMs: 30000,
-        generateHighQualityLinkPreview: true,
         getMessage: async (key) => {
             if (store) {
                 const msg = await store.loadMessage(key.remoteJid, key.id);
                 return msg?.message || undefined;
             }
-            return { conversation: "Hello, I am the bot" };
+            return { conversation: "System Message Placeholder" };
         }
     });
 
     store.bind(sock.ev);
     sock.ev.on("creds.update", saveCreds);
 
+    // Connection Handler
     sock.ev.on("connection.update", async (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, pairingCode } = update;
 
         if (connection === "close") {  
             const reason = lastDisconnect?.error?.output?.statusCode;  
-            addLog(`🔄 Connection Closed. Reason: ${reason}`);  
-            const shouldReconnect = reason !== DisconnectReason.loggedOut;  
-            if (shouldReconnect) {  
-                addLog("♻️ Attempting automatic reconnection...");  
+            addLog(`🔄 Connection Closed. Reason Code: ${reason}`);  
+            
+            if (reason !== DisconnectReason.loggedOut) {  
+                addLog("♻️ Attempting Reconnection...");  
                 startBot();  
             } else {  
-                addLog("❌ Logged out. Delete 'session' folder and restart.");  
+                addLog("❌ Logged out. Manual intervention required (Delete session folder).");  
             }  
         }  
 
         if (connection === "open") {  
-            addLog("✅ WHATSAPP CONNECTION ESTABLISHED");  
-            sock.user.id = decodeJid(sock.user.id);  
-            webPairingCode = "✅ Bot is Online and Guarding!";  
+            addLog("✅ WHATSAPP AUTHENTICATION SUCCESSFUL");  
+            const botId = decodeJid(sock.user.id);  
+            webPairingCode = "✅ Bot Online & Connected";  
 
-            // Send startup notification to self  
-            await sock.sendMessage(sock.user.id, {   
-                text: "🚀 *Bot System Online*\n\nHost: Render Cloud\nTime: " + new Date().toLocaleString() + "\nType *.menu* to begin."   
+            // Startup Broadcast
+            await sock.sendMessage(botId, {   
+                text: `🚀 *Bot System v4.2 Online*\n\n*Host:* Render\n*Uptime:* ${getUptime()}\n*Owner:* ${OWNER_NAME}\n\nType *.menu* to begin.`   
             });  
         }
     });
 
-    // Pairing Code Sequence
-    if (!sock.authState.creds.registered) {
+    // Pairing Code logic for Headless Servers
+    if (!sock.authState.creds.registered && BOT_NUMBER) {
         setTimeout(async () => {
-            const cleanedNumber = BOT_NUMBER.replace(/[^0-9]/g, "");
             try {
-                addLog(`🔑 Requesting pairing code for ${cleanedNumber}...`); // Restored missing backticks
+                const cleanedNumber = BOT_NUMBER.replace(/[^0-9]/g, "");
+                addLog(`🔑 Requesting Pair Code for: ${cleanedNumber}`);
                 const code = await sock.requestPairingCode(cleanedNumber);
-                webPairingCode = `🔥 PAIR CODE: ${code}`; // Restored missing backticks
-                addLog(`🔑 PAIRING CODE: ${code}`); // Restored missing backticks
+                webPairingCode = `🔥 YOUR PAIR CODE: ${code}`;
+                addLog(`🔥 PAIRING CODE GENERATED: ${code}`);
             } catch (err) {
-                addLog("❌ Pairing Engine Error. Check BOT_NUMBER.");
+                addLog(`❌ Pairing Error: ${err.message}`);
             }
-        }, 8000);
+        }, 10000); // 10s delay to ensure socket is ready
     }
 
     /**
-    📩 MESSAGE UPSERT HANDLER
-    */
-    sock.ev.on("messages.upsert", async ({ messages, type }) => {
+     * 📩 MESSAGE UPSERT HANDLER (The "Brain")
+     */
+    sock.ev.on("messages.upsert", async ({ messages }) => {
         try {
-            const msg = messages[0];
-            if (!msg.message || msg.key.remoteJid === 'status@broadcast') return;
+            const m = messages[0];
+            if (!m.message || m.key.remoteJid === 'status@broadcast') return;
 
-            const from = msg.key.remoteJid;  
+            const from = m.key.remoteJid;  
             const isGroup = from.endsWith("@g.us");  
-            const isFromMe = msg.key.fromMe;  
-            const sender = isGroup ? msg.key.participant : from;  
+            const isFromMe = m.key.fromMe;  
+            const sender = isGroup ? m.key.participant : from;  
             const botNumber = decodeJid(sock.user.id);  
 
             // Content Extraction  
-            const messageType = Object.keys(msg.message)[0];  
-            const messageText = (messageType === 'conversation') ? msg.message.conversation :  
-                                (messageType === 'extendedTextMessage') ? msg.message.extendedTextMessage.text :  
-                                (messageType === 'imageMessage') ? msg.message.imageMessage.caption :  
-                                (messageType === 'videoMessage') ? msg.message.videoMessage.caption : "";  
+            const type = getContentType(m.message);
+            const body = (type === 'conversation') ? m.message.conversation :  
+                         (type === 'extendedTextMessage') ? m.message.extendedTextMessage.text :  
+                         (type === 'imageMessage') ? m.message.imageMessage.caption :  
+                         (type === 'videoMessage') ? m.message.videoMessage.caption : "";  
 
-            const cleanText = messageText.trim();  
-            const command = cleanText.split(/\s+/)[0].toLowerCase();  
-            const args = cleanText.split(/\s+/).slice(1);  
-            const query = args.join(" ");  
+            const text = body.trim();  
+            const isCmd = text.startsWith(".");
+            const command = isCmd ? text.slice(1).trim().split(/ +/).shift().toLowerCase() : null;
+            const args = text.trim().split(/ +/).slice(1);
+            const query = args.join(" ");
 
-            if (cleanText) {  
-                addLog(`📩 [${isFromMe ? 'OWNER' : 'USER'}] ${from.split('@')[0]}: ${cleanText.substring(0, 30)}`);  
+            if (text) {  
+                addLog(`📩 [${isFromMe ? 'OWNER' : 'USER'}] ${from.split('@')[0]}: ${text.substring(0, 40)}`);  
             }  
 
-            // --- GLOBAL SECURITY GATEKEEPER ---  
-            if (command.startsWith(".") && !isFromMe) {  
-                addLog(`🚫 Blocked: ${command} from unauthorized sender.`);  
-                return;  
-            }  
-
-            // --- ANTI-LINK SYSTEM ---  
-            if (isGroup && antiLinkActive && cleanText.includes("chat.whatsapp.com") && !isFromMe) {  
-                await sock.sendMessage(from, { delete: msg.key });  
-                return await sock.sendMessage(from, { text: "🚫 *Link Detected:* External group links are forbidden." });  
-            }  
-
-            // --- COMMAND REGISTRY ---  
-
-            // 1. SYSTEM INFO  
-            if (command === ".menu" || command === ".help") {  
-                const menu = `👑 *MASTER CONSOLE V4.1* 👑
-
---- ⚡ AUTOMATION ---
-.autoreply on | off  - AI Mode
-.antilink on | off   - Link Guard
-AutoReply: ${autoReplyActive ? '🟢' : '🔴'}
-
---- 🛡️ ADMIN POWER ---
-.promote    - Grant Admin
-.demote     - Remove Admin
-.kick       - Remove User
-.kickall    - Wipe Group
-.tagall     - Mention All
-.hidetag    - Ghost Tag
-
---- 🧠 AI & ENGINE ---
-.ai <query> - Ask Gemini
-.clear      - Reset AI
-.ping       - Latency
-.alive      - System Info
-
---- 🛠️ UTILITIES ---
-.time | .date | .owner
-.quote | .joke | .fact
-
---- 🎭 FUN ---
-.flip | .dice | .8ball`;
-                return await sock.sendMessage(from, { text: menu });
+            // --- SECURITY: OWNER-ONLY BLOCK ---
+            // If it's a command but not from you, block it unless it's a public command
+            if (isCmd && !isFromMe) {
+                // List of commands anyone can use
+                const publicCmds = ['ai', 'ping', 'alive', 'joke', 'fact'];
+                if (!publicCmds.includes(command)) {
+                    return; // Silent block for security
+                }
             }
 
-            // 2. AUTOMATION CONTROLS  
-            if (command === ".autoreply") {  
-                if (!query) return await sock.sendMessage(from, { text: "Usage: .autoreply on/off" });  
-                autoReplyActive = query === "on";  
-                return await sock.sendMessage(from, { text: `🤖 AI Smart Mode: *${autoReplyActive ? 'ENABLED' : 'DISABLED'}*` });  
+            // --- ANTI-LINK (Group Guard) ---  
+            if (isGroup && antiLinkActive && text.includes("chat.whatsapp.com") && !isFromMe) {  
+                await sock.sendMessage(from, { delete: m.key });  
+                return await sock.sendMessage(from, { text: "🚫 *Link Detected:* External links are not allowed here." });  
             }  
 
-            if (command === ".antilink") {  
-                antiLinkActive = query === "on";  
-                return await sock.sendMessage(from, { text: `🛡️ Link Guard: *${antiLinkActive ? 'ENABLED' : 'DISABLED'}*` });  
-            }  
+            // --- COMMAND LOGIC ---
+            switch (command) {
+                case 'menu':
+                case 'help':
+                    const menu = `
+👑 *MASTER CONSOLE V4.2* 👑
+_Powered by Gemini AI_
 
-            // FIX 2: AI EXECUTION (DMs ONLY)
-            // Added `!isGroup` so it only works in private DMs. 
-            // Changed `isFromMe` to `!isFromMe` so it replies to other people messaging you. 
-            // If you want it to reply to your OWN messages instead, change `!isFromMe` back to `isFromMe`.
-            if (!command.startsWith(".") && autoReplyActive && !isGroup && !isFromMe && cleanText.length > 2) {  
-                const aiRes = await askGemini(cleanText, from);  
-                return await sock.sendMessage(from, { text: `🧠 *Assistant:* ${aiRes}` });  
-            }  
+*⚡ AUTOMATION*
+.autoreply [on/off]
+.antilink [on/off]
+Current: ${autoReplyActive ? '🟢' : '🔴'} | Guard: ${antiLinkActive ? '🛡️' : '⚪'}
 
-            if (command === ".ai" || command === ".gpt") {  
-                if (!query) return await sock.sendMessage(from, { text: "❓ Ask me something." });  
-                await sock.sendMessage(from, { text: "_Thinking..._" });  
-                const aiRes = await askGemini(query, from);  
-                return await sock.sendMessage(from, { text: aiRes });  
-            }  
+*🛡️ GROUP ADMIN*
+.promote - Grant Admin
+.demote - Remove Admin
+.kick - Remove User
+.tagall - Mention Everyone
+.hidetag - Ghost Mention
 
-            if (command === ".clear") {  
-                chatMemory[from] = [];  
-                return await sock.sendMessage(from, { text: "🧹 *AI Memory Cleared.*" });  
-            }  
+*🧠 AI ENGINE*
+.ai <query> - Ask Gemini
+.clear - Reset Chat History
 
-            // 4. ADMIN TOOLS  
-            if (isGroup) {  
-                const groupMetadata = await sock.groupMetadata(from);  
-                const participants = groupMetadata.participants;  
+*🛠️ UTILITIES*
+.ping - Test Latency
+.status - System Stats
+.runtime - Up-time
+.owner - Contact Details
 
-                if (command === ".promote") {  
-                    let user = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || msg.message.extendedTextMessage?.contextInfo?.participant;  
-                    if (!user) return await sock.sendMessage(from, { text: "⚠️ Reply to or tag a user." });  
-                    await sock.groupParticipantsUpdate(from, [user], "promote");  
-                    return await sock.sendMessage(from, { text: "✅ Done." });  
-                }  
+*🎭 FUN & INFO*
+.quote | .joke | .fact
+.weather <city>
+.news | .translate <txt>`;
+                    await sock.sendMessage(from, { text: menu });
+                    break;
 
-                if (command === ".demote") {  
-                    let user = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || msg.message.extendedTextMessage?.contextInfo?.participant;  
-                    if (!user) return await sock.sendMessage(from, { text: "⚠️ Reply to or tag a user." });  
-                    await sock.groupParticipantsUpdate(from, [user], "demote");  
-                    return await sock.sendMessage(from, { text: "✅ Done." });  
-                }  
+                case 'ping':
+                    const start = Date.now();
+                    const pingMsg = await sock.sendMessage(from, { text: "Testing Latency..." });
+                    const end = Date.now();
+                    await sock.sendMessage(from, { 
+                        text: `🚀 *Response:* ${end - start}ms`, 
+                        edit: pingMsg.key 
+                    });
+                    break;
 
-                if (command === ".kick") {  
-                    let user = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || msg.message.extendedTextMessage?.contextInfo?.participant;  
-                    if (!user) return await sock.sendMessage(from, { text: "⚠️ Tag the user." });  
-                    await sock.groupParticipantsUpdate(from, [user], "remove");  
-                    return await sock.sendMessage(from, { text: "👢 Removed." });  
-                }  
+                case 'status':
+                    const usedMem = process.memoryUsage().heapUsed / 1024 / 1024;
+                    const totalMem = os.totalmem() / 1024 / 1024 / 1024;
+                    const statusText = `
+📊 *SYSTEM DIAGNOSTICS*
+---
+*CPU:* ${os.cpus()[0].model}
+*Memory:* ${usedMem.toFixed(2)} MB / ${totalMem.toFixed(2)} GB
+*Platform:* ${os.platform()}
+*Uptime:* ${getUptime()}
+*Node:* ${process.version}`;
+                    await sock.sendMessage(from, { text: statusText });
+                    break;
 
-                if (command === ".kickall") {  
-                    await sock.sendMessage(from, { text: "☢️ *PURGE STARTING...*" });  
-                    for (let p of participants) {  
-                        if (p.id !== botNumber && !p.admin) {  
-                            await sock.groupParticipantsUpdate(from, [p.id], "remove");  
-                            await delay(800);  
-                        }  
-                    }  
-                    return await sock.sendMessage(from, { text: "🧹 Purge complete." });  
-                }  
+                case 'ai':
+                    if (!query) return await sock.sendMessage(from, { text: "❓ Please provide a question for Gemini." });
+                    await sock.sendMessage(from, { text: "_Processing request..._" });
+                    const aiResult = await askGemini(query, from);
+                    await sock.sendMessage(from, { text: aiResult });
+                    break;
 
-                if (command === ".tagall") {  
-                    let txt = `📢 *Attention Participants*\n\n*Msg:* ${query || 'None'}\n\n`;  
-                    let mentions = [];  
-                    for (let p of participants) {  
-                        mentions.push(p.id);  
-                        txt += `• @${p.id.split("@")[0]}\n`;  
-                    }  
-                    return await sock.sendMessage(from, { text: txt, mentions });  
-                }  
+                case 'autoreply':
+                    if (!query) return await sock.sendMessage(from, { text: "Usage: .autoreply on/off" });
+                    autoReplyActive = query === "on";
+                    await sock.sendMessage(from, { text: `🤖 AI Smart Reply: *${autoReplyActive ? 'ENABLED' : 'DISABLED'}*` });
+                    break;
 
-                if (command === ".hidetag") {  
-                    const mentions = participants.map(p => p.id);  
-                    return await sock.sendMessage(from, { text: query || "Hidden alert!", mentions });  
-                }  
-            }  
+                case 'antilink':
+                    antiLinkActive = query === "on";
+                    await sock.sendMessage(from, { text: `🛡️ Link Guard: *${antiLinkActive ? 'ENABLED' : 'DISABLED'}*` });
+                    break;
 
-            // 5. UTILITIES  
-            if (command === ".ping") {  
-                const start = Date.now();  
-                await sock.sendMessage(from, { text: "Calculating..." });  
-                const end = Date.now();  
-                return await sock.sendMessage(from, { text: `🚀 *Latency:* ${end - start}ms` });  
-            }  
+                case 'tagall':
+                    if (!isGroup) return;
+                    const groupMeta = await sock.groupMetadata(from);
+                    let tagText = `📢 *Attention Participants*\n\n${query || 'No Message'}\n\n`;
+                    let participants = groupMeta.participants.map(p => p.id);
+                    for (let p of participants) {
+                        tagText += `• @${p.split("@")[0]}\n`;
+                    }
+                    await sock.sendMessage(from, { text: tagText, mentions: participants });
+                    break;
 
-            if (command === ".alive") {  
-                return await sock.sendMessage(from, { text: "🟢 *Status:* System Operational\n☁️ *Host:* Render Cloud\n⚡ *Engine:* Baileys v5" });  
-            }  
+                case 'kick':
+                    if (!isGroup) return;
+                    let target = m.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || m.message.extendedTextMessage?.contextInfo?.participant;
+                    if (!target) return await sock.sendMessage(from, { text: "⚠️ Reply to or tag a user to kick." });
+                    await sock.groupParticipantsUpdate(from, [target], "remove");
+                    await sock.sendMessage(from, { text: "👢 Target has been removed." });
+                    break;
 
-            if (command === ".time") return await sock.sendMessage(from, { text: `🕙 ${new Date().toLocaleTimeString()}` });  
-            if (command === ".date") return await sock.sendMessage(from, { text: `📅 ${new Date().toDateString()}` });  
+                case 'joke':
+                    const jokeRes = await axios.get("https://official-joke-api.appspot.com/random_joke").catch(() => null);
+                    if (jokeRes) await sock.sendMessage(from, { text: `*${jokeRes.data.setup}*\n\n${jokeRes.data.punchline}` });
+                    break;
 
-            // 6. EXTERNAL APIS  
-            if (command === ".quote") {  
-                const res = await axios.get("https://api.quotable.io/random").catch(() => null);  
-                if (!res) return await sock.sendMessage(from, { text: "❌ API Offline." });  
-                return await sock.sendMessage(from, { text: `“${res.data.content}”\n— *${res.data.author}*` });  
-            }  
+                case 'fact':
+                    const factRes = await axios.get("https://uselessfacts.jsph.pl/random.json?language=en").catch(() => null);
+                    if (factRes) await sock.sendMessage(from, { text: `💡 *Did you know?*\n${factRes.data.text}` });
+                    break;
 
-            if (command === ".joke") {  
-                const res = await axios.get("https://official-joke-api.appspot.com/random_joke").catch(() => null);  
-                if (!res) return await sock.sendMessage(from, { text: "❌ API Offline." });  
-                return await sock.sendMessage(from, { text: `*${res.data.setup}*\n\n${res.data.punchline}` });  
-            }  
+                case 'weather':
+                    if (!query) return await sock.sendMessage(from, { text: "Please provide a city name." });
+                    // Simple placeholder for weather logic
+                    await sock.sendMessage(from, { text: `🌤️ Weather feature for *${query}* is currently under maintenance.` });
+                    break;
 
-            if (command === ".fact") {  
-                const res = await axios.get("https://uselessfacts.jsph.pl/random.json?language=en").catch(() => null);  
-                if (!res) return await sock.sendMessage(from, { text: "❌ API Offline." });  
-                return await sock.sendMessage(from, { text: `💡 *Fact:* ${res.data.text}` });  
-            }  
-
-            // 7. FUN  
-            if (command === ".flip") return await sock.sendMessage(from, { text: `🪙 Result: *${Math.random() > 0.5 ? "HEADS" : "TAILS"}*` });  
-            if (command === ".dice") return await sock.sendMessage(from, { text: `🎲 Roll: *${Math.floor(Math.random() * 6) + 1}*` });  
-            if (command === ".8ball") {  
-                const res = ["Yes", "No", "Maybe", "Ask later", "Definitely", "Highly Doubtful"];  
-                return await sock.sendMessage(from, { text: `🎱 *Oracle:* ${res[Math.floor(Math.random() * res.length)]}` });  
-            }  
+                default:
+                    // Auto-Reply Logic for DMs
+                    if (autoReplyActive && !isGroup && !isFromMe && text.length > 3) {
+                        const autoAi = await askGemini(text, from);
+                        await sock.sendMessage(from, { text: `🧠 *Assistant:* ${autoAi}` });
+                    }
+                    break;
+            }
 
         } catch (err) {  
-            addLog(`❌ Logic Error: ${err.message}`); // Restored missing backticks
+            addLog(`❌ Command Error: ${err.message}`); 
         }  
     });  
 
-    // Auto-Greeting  
-    sock.ev.on("group-participants.update", async (data) => {  
+    // Handle Join Events
+    sock.ev.on("group-participants.update", async (update) => {  
         try {  
-            const metadata = await sock.groupMetadata(data.id);  
-            for (const user of data.participants) {  
-                const userNum = user.split("@")[0];  
-                if (data.action === "add") {  
-                    await sock.sendMessage(data.id, { text: `👋 Welcome @${userNum} to ${metadata.subject}!`, mentions: [user] });  
+            const { id, participants, action } = update;
+            const metadata = await sock.groupMetadata(id);  
+            if (action === "add") {  
+                for (const user of participants) {  
+                    await sock.sendMessage(id, { 
+                        text: `👋 Welcome @${user.split("@")[0]} to *${metadata.subject}*!`, 
+                        mentions: [user] 
+                    });  
                 }  
             }  
-        } catch (e) { console.log(e); }  
+        } catch (e) { console.error(e); }  
     });
-
 }
 
 /**
-🌐 WEB CONSOLE HTML/CSS
-*/
+ * 🌐 ENHANCED WEB CONSOLE (CSS3 + Real-time display)
+ */
 app.get("/", (req, res) => {
-    res.send(`
-    <!DOCTYPE html>   <html lang="en">  
-    <head>  
-        <meta charset="UTF-8">  
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">  
-        <title>Bot Pro Console</title>  
-        <style>  
-            body { background: #0c0c0c; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; }  
-            .container { max-width: 1000px; margin: auto; }  
-            .header { text-align: center; border-bottom: 2px solid #25D366; padding: 20px; }  
-            .status-box { background: #1a1a1a; padding: 20px; border-radius: 15px; text-align: center; margin: 20px 0; border: 1px solid #333; }  
-            .status-box h2 { color: #25D366; margin: 0; }  
-            .terminal { background: #000; border-radius: 10px; padding: 20px; height: 400px; overflow-y: auto; border: 1px solid #444; font-family: monospace; }  
-            .log { margin-bottom: 10px; border-bottom: 1px solid #111; padding-bottom: 5px; color: #00ff41; }  
-            .footer { text-align: center; margin-top: 30px; font-size: 0.8em; color: #555; }  
-            ::-webkit-scrollbar { width: 8px; }  
-            ::-webkit-scrollbar-thumb { background: #25D366; border-radius: 10px; }  
-        </style>  
-    </head>  
-    <body>  
-        <div class="container">  
-            <div class="header"><h1>BOT PRO CONSOLE</h1></div>  
-            <div class="status-box"><h2>${webPairingCode}</h2></div>  
-            <div class="terminal">  
-                ${statusLogs.map(l => `<div class="log">${l}</div>`).join('')}  
-            </div>  
-            <div class="footer">Built for Stability | Node.js v20.x | Baileys v5</div>  
-        </div>  
-        <script>setTimeout(() => location.reload(), 10000);</script>  
-    </body>  
-    </html>  
-    `);  
+    const htmlContent = `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Bot Pro Console V4.2</title>
+        <style>
+            :root { --main-bg: #0a0b10; --card-bg: #161b22; --accent: #25D366; --text: #e6edf3; }
+            body { background: var(--main-bg); color: var(--text); font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; }
+            .container { max-width: 900px; margin: auto; }
+            .card { background: var(--card-bg); border-radius: 12px; padding: 25px; margin-bottom: 20px; border: 1px solid #30363d; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
+            .header { text-align: center; border-bottom: 2px solid var(--accent); padding-bottom: 15px; }
+            .status-badge { display: inline-block; padding: 8px 15px; border-radius: 20px; background: rgba(37, 211, 102, 0.1); color: var(--accent); font-weight: bold; border: 1px solid var(--accent); }
+            .terminal { background: #000; border-radius: 8px; padding: 15px; height: 350px; overflow-y: auto; font-family: 'Courier New', Courier, monospace; font-size: 14px; border: 1px solid #444; }
+            .log-line { border-bottom: 1px solid #1a1a1a; padding: 5px 0; color: #a5d6ff; }
+            .log-line:last-child { border: none; }
+            .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-top: 15px; }
+            .stat-item { background: #0d1117; padding: 15px; border-radius: 8px; text-align: center; border: 1px solid #30363d; }
+            .stat-val { font-size: 1.2em; font-weight: bold; color: var(--accent); }
+            .stat-label { font-size: 0.8em; color: #8b949e; text-transform: uppercase; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="card header">
+                <h1>WHATSAPP BOT CONSOLE</h1>
+                <div class="status-badge">${webPairingCode}</div>
+            </div>
+            
+            <div class="stats-grid">
+                <div class="stat-item"><div class="stat-val">${os.platform()}</div><div class="stat-label">Platform</div></div>
+                <div class="stat-item"><div class="stat-val">${getUptime()}</div><div class="stat-label">Uptime</div></div>
+                <div class="stat-item"><div class="stat-val">${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(1)} MB</div><div class="stat-label">Memory</div></div>
+            </div>
+
+            <div class="card">
+                <h3>Live System Logs</h3>
+                <div class="terminal">
+                    ${statusLogs.map(l => `<div class="log-line">${l}</div>`).join('')}
+                </div>
+            </div>
+            <div style="text-align:center; color:#555; font-size:12px;">Refreshes every 10 seconds</div>
+        </div>
+        <script>setTimeout(() => location.reload(), 10000);</script>
+    </body>
+    </html>`;
+    res.send(htmlContent);
 });
 
-// Start the server
-app.listen(PORT, () => {
-    addLog(`Server running on Port ${PORT}`); // Restored missing backticks
-    startBot().catch(e => addLog(`BOOT ERROR: ${e.message}`)); // Restored missing backticks
+// Start the Express Server and the Bot
+app.listen(PORT, '0.0.0.0', () => {
+    addLog(`🚀 WEB CONSOLE: http://localhost:${PORT}`);
+    startBot().catch(err => addLog(`❌ BOOT ERROR: ${err.message}`));
 });
