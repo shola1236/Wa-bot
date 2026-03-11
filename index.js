@@ -21,15 +21,20 @@
 const express = require("express")
 const pino = require("pino")
 const axios = require("axios")
+const Baileys = require("@whiskeysockets/baileys") // Import the whole module
+
+// Destructure from the main module with fallback protection
 const {
     default: makeWASocket,
     useMultiFileAuthState,
     DisconnectReason,
     fetchLatestBaileysVersion,
-    makeInMemoryStore, // This is now correctly extracted
     delay,
     jidDecode
-} = require("@whiskeysockets/baileys")
+} = Baileys
+
+// Explicitly define makeInMemoryStore to ensure it's captured correctly
+const makeInMemoryStore = Baileys.makeInMemoryStore
 
 // --- SYSTEM INITIALIZATION ---
 const app = express()
@@ -436,7 +441,6 @@ _Status: ${autoReplyActive ? '🟢 ON' : '🔴 OFF'}_
 }
 
 // --- WEB INTERFACE ENGINE ---
-// Provides an HTML/CSS dashboard for monitoring the bot status.
 app.get("/", (req, res) => {
     res.send(`
     <!DOCTYPE html>
