@@ -26,7 +26,7 @@ const {
     useMultiFileAuthState,
     DisconnectReason,
     fetchLatestBaileysVersion,
-    makeInMemoryStore,
+    makeInMemoryStore, // This is now correctly extracted
     delay,
     jidDecode
 } = require("@whiskeysockets/baileys")
