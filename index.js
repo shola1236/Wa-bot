@@ -2,7 +2,7 @@
 ==============================================================================
 🚀 WHATSAPP BOT MASTER CONSOLE - ULTIMATE EDITION (V4.2.0)
 ==============================================================================
-Author: Sholaupdates
+Author: Coding Partner AI
 License: MIT
 Build: High-Stability for Cloud Environments (Render/Heroku)
 ==============================================================================
@@ -19,14 +19,18 @@ const os = require("os");
 // --- FIXED IMPORT LOGIC ---
 const Baileys = require("@whiskeysockets/baileys");
 const makeWASocket = Baileys.default || Baileys;
-const useMultiFileAuthState = Baileys.useMultiFileAuthState;
-const DisconnectReason = Baileys.DisconnectReason;
-const fetchLatestBaileysVersion = Baileys.fetchLatestBaileysVersion;
-const delay = Baileys.delay;
-const jidDecode = Baileys.jidDecode;
-const makeInMemoryStore = Baileys.makeInMemoryStore;
-const getContentType = Baileys.getContentType;
-const downloadContentFromMessage = Baileys.downloadContentFromMessage;
+const {
+    useMultiFileAuthState,
+    DisconnectReason,
+    fetchLatestBaileysVersion,
+    delay,
+    jidDecode,
+    getContentType,
+    downloadContentFromMessage
+} = Baileys;
+
+// Explicitly grabbing makeInMemoryStore to fix the TypeError
+const makeInMemoryStore = Baileys.makeInMemoryStore || Baileys.default?.makeInMemoryStore;
 
 // --- SYSTEM INITIALIZATION ---
 const app = express();
@@ -240,10 +244,12 @@ async function startBot() {
             }  
 
             // --- SECURITY: OWNER-ONLY BLOCK ---
+            // If it's a command but not from you, block it unless it's a public command
             if (isCmd && !isFromMe) {
+                // List of commands anyone can use
                 const publicCmds = ['ai', 'ping', 'alive', 'joke', 'fact'];
                 if (!publicCmds.includes(command)) {
-                    return; 
+                    return; // Silent block for security
                 }
             }
 
@@ -363,10 +369,12 @@ Current: ${autoReplyActive ? '🟢' : '🔴'} | Guard: ${antiLinkActive ? '🛡�
 
                 case 'weather':
                     if (!query) return await sock.sendMessage(from, { text: "Please provide a city name." });
+                    // Simple placeholder for weather logic
                     await sock.sendMessage(from, { text: `🌤️ Weather feature for *${query}* is currently under maintenance.` });
                     break;
 
                 default:
+                    // Auto-Reply Logic for DMs
                     if (autoReplyActive && !isGroup && !isFromMe && text.length > 3) {
                         const autoAi = await askGemini(text, from);
                         await sock.sendMessage(from, { text: `🧠 *Assistant:* ${autoAi}` });
