@@ -35,10 +35,10 @@ const {
     generateWAMessageFromContent, 
     generateMessageID, 
     downloadContentFromMessage, 
-    makeInMemoryStore, 
     jidNormalizedUser, 
     proto 
 } = require("@whiskeysockets/baileys");
+const makeInMemoryStore = require("@whiskeysockets/baileys").makeInMemoryStore || require("@whiskeysockets/baileys/lib/Store").makeInMemoryStore;
 
 // --- SYSTEM INITIALIZATION ---
 const app = express();
