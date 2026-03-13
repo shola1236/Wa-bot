@@ -40,9 +40,6 @@ const {
     proto 
 } = require("@whiskeysockets/baileys");
 
-// FIX: Direct require for Store sub-module as per @whiskeysockets specs
-const { makeInMemoryStore: Store } = require('@whiskeysockets/baileys/lib/Store');
-
 // --- SYSTEM INITIALIZATION ---
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -59,7 +56,7 @@ let statusLogs = [];
 let webPairingCode = "System Booting... Waiting for Pairing Engine.";
 
 // Baileys Store to maintain session memory and message tracking
-const store = Store({ 
+const store = makeInMemoryStore({ 
     logger: pino().child({ level: 'silent', stream: 'store' }) 
 });
 
