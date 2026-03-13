@@ -421,7 +421,7 @@ _AutoReply: ${autoReplyActive ? '🟢' : '🔴'}_
 }
 
 /**
- * 🌐 WEB CONSOLE HTML/CSS
+ * 🌐 ENHANCED WEB CONSOLE WITH RESET CONTROL
  */
 app.get("/", (req, res) => {
     res.send(`
@@ -437,6 +437,12 @@ app.get("/", (req, res) => {
             .header { text-align: center; border-bottom: 2px solid #25D366; padding: 20px; }
             .status-box { background: #1a1a1a; padding: 20px; border-radius: 15px; text-align: center; margin: 20px 0; border: 1px solid #333; }
             .status-box h2 { color: #25D366; margin: 0; }
+            .btn-reset { 
+                background: #ff4b2b; color: white; border: none; padding: 10px 20px; 
+                border-radius: 5px; cursor: pointer; font-weight: bold; margin-top: 10px;
+                transition: 0.3s;
+            }
+            .btn-reset:hover { background: #ff416c; transform: scale(1.05); }
             .terminal { background: #000; border-radius: 10px; padding: 20px; height: 400px; overflow-y: auto; border: 1px solid #444; font-family: monospace; }
             .log { margin-bottom: 10px; border-bottom: 1px solid #111; padding-bottom: 5px; color: #00ff41; }
             .footer { text-align: center; margin-top: 30px; font-size: 0.8em; color: #555; }
@@ -447,20 +453,39 @@ app.get("/", (req, res) => {
     <body>
         <div class="container">
             <div class="header"><h1>BOT PRO CONSOLE</h1></div>
-            <div class="status-box"><h2>${webPairingCode}</h2></div>
+            <div class="status-box">
+                <h2>${webPairingCode}</h2>
+                <button class="btn-reset" onclick="confirmReset()">🔄 Request New Pairing Code</button>
+            </div>
             <div class="terminal">
                 ${statusLogs.map(l => `<div class="log">${l}</div>`).join('')}
             </div>
             <div class="footer">Built for Stability | Node.js v20.x | Baileys v5</div>
         </div>
-        <script>setTimeout(() => location.reload(), 10000);</script>
+        <script>
+            function confirmReset() {
+                if(confirm("This will delete your current session and restart the bot. Continue?")) {
+                    window.location.href = "/reset-session";
+                }
+            }
+            setTimeout(() => location.reload(), 15000);
+        </script>
     </body>
     </html>
     `);
 });
 
-// Start the server
-app.listen(PORT, () => {
-    addLog(`Server running on Port ${PORT}`);
-    startBot().catch(e => addLog(`BOOT ERROR: ${e.message}`));
+/**
+ * ⚡ RESET ROUTE: Nukes the session and restarts
+ */
+app.get("/reset-session", (req, res) => {
+    addLog("⚠️ MANUAL RESET TRIGGERED: Deleting session...");
+    try {
+        fs.rmSync(path.join(__dirname, "session"), { recursive: true, force: true });
+        res.send("<h1>Session Deleted. Bot is restarting...</h1><script>setTimeout(()=>window.location.href='/', 5000)</script>");
+        // Force the process to exit; Render will automatically restart it
+        setTimeout(() => process.exit(0), 1000);
+    } catch (err) {
+        res.send("Error resetting session: " + err.message);
+    }
 });
