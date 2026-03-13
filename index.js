@@ -38,7 +38,7 @@ const {
     jidNormalizedUser, 
     proto 
 } = require("@whiskeysockets/baileys");
-const makeInMemoryStore = require("@whiskeysockets/baileys").makeInMemoryStore || require("@whiskeysockets/baileys/lib/Store").makeInMemoryStore;
+const makeInMemoryStore = require("@whiskeysockets/baileys").makeInMemoryStore || (() => ({ bind: () => {}, readFromFile: () => {}, writeToFile: () => {} }));
 
 // --- SYSTEM INITIALIZATION ---
 const app = express();
