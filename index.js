@@ -420,72 +420,83 @@ _AutoReply: ${autoReplyActive ? '🟢' : '🔴'}_
     });
 }
 
-/**
- * 🌐 ENHANCED WEB CONSOLE WITH RESET CONTROL
- */
-app.get("/", (req, res) => {
-    res.send(`
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Bot Pro Console</title>
-        <style>
-            body { background: #0c0c0c; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; }
-            .container { max-width: 1000px; margin: auto; }
-            .header { text-align: center; border-bottom: 2px solid #25D366; padding: 20px; }
-            .status-box { background: #1a1a1a; padding: 20px; border-radius: 15px; text-align: center; margin: 20px 0; border: 1px solid #333; }
-            .status-box h2 { color: #25D366; margin: 0; }
-            .btn-reset { 
-                background: #ff4b2b; color: white; border: none; padding: 10px 20px; 
-                border-radius: 5px; cursor: pointer; font-weight: bold; margin-top: 10px;
-                transition: 0.3s;
-            }
-            .btn-reset:hover { background: #ff416c; transform: scale(1.05); }
-            .terminal { background: #000; border-radius: 10px; padding: 20px; height: 400px; overflow-y: auto; border: 1px solid #444; font-family: monospace; }
-            .log { margin-bottom: 10px; border-bottom: 1px solid #111; padding-bottom: 5px; color: #00ff41; }
-            .footer { text-align: center; margin-top: 30px; font-size: 0.8em; color: #555; }
-            ::-webkit-scrollbar { width: 8px; }
-            ::-webkit-scrollbar-thumb { background: #25D366; border-radius: 10px; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header"><h1>BOT PRO CONSOLE</h1></div>
-            <div class="status-box">
-                <h2>${webPairingCode}</h2>
-                <button class="btn-reset" onclick="confirmReset()">🔄 Request New Pairing Code</button>
-            </div>
-            <div class="terminal">
-                ${statusLogs.map(l => `<div class="log">${l}</div>`).join('')}
-            </div>
-            <div class="footer">Built for Stability | Node.js v20.x | Baileys v5</div>
-        </div>
-        <script>
-            function confirmReset() {
-                if(confirm("This will delete your current session and restart the bot. Continue?")) {
-                    window.location.href = "/reset-session";
+    /**
+     * 🌐 ENHANCED WEB CONSOLE WITH RESET CONTROL
+     */
+    app.get("/", (req, res) => {
+        res.send(`
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Bot Pro Console</title>
+            <style>
+                body { background: #0c0c0c; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; }
+                .container { max-width: 1000px; margin: auto; }
+                .header { text-align: center; border-bottom: 2px solid #25D366; padding: 20px; }
+                .status-box { background: #1a1a1a; padding: 20px; border-radius: 15px; text-align: center; margin: 20px 0; border: 1px solid #333; }
+                .status-box h2 { color: #25D366; margin: 0; }
+                .btn-reset { 
+                    background: #ff4b2b; color: white; border: none; padding: 10px 20px; 
+                    border-radius: 5px; cursor: pointer; font-weight: bold; margin-top: 10px;
+                    transition: 0.3s;
                 }
-            }
-            setTimeout(() => location.reload(), 15000);
-        </script>
-    </body>
-    </html>
-    `);
-});
+                .btn-reset:hover { background: #ff416c; transform: scale(1.05); }
+                .terminal { background: #000; border-radius: 10px; padding: 20px; height: 400px; overflow-y: auto; border: 1px solid #444; font-family: monospace; }
+                .log { margin-bottom: 10px; border-bottom: 1px solid #111; padding-bottom: 5px; color: #00ff41; }
+                .footer { text-align: center; margin-top: 30px; font-size: 0.8em; color: #555; }
+                ::-webkit-scrollbar { width: 8px; }
+                ::-webkit-scrollbar-thumb { background: #25D366; border-radius: 10px; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header"><h1>BOT PRO CONSOLE</h1></div>
+                <div class="status-box">
+                    <h2>${webPairingCode}</h2>
+                    <button class="btn-reset" onclick="confirmReset()">🔄 Request New Pairing Code</button>
+                </div>
+                <div class="terminal">
+                    ${statusLogs.map(l => `<div class="log">${l}</div>`).join('')}
+                </div>
+                <div class="footer">Built for Stability | Node.js v20.x | Baileys v5</div>
+            </div>
+            <script>
+                function confirmReset() {
+                    if(confirm("This will delete your current session and restart the bot. Continue?")) {
+                        window.location.href = "/reset-session";
+                    }
+                }
+                setTimeout(() => location.reload(), 15000);
+            </script>
+        </body>
+        </html>
+        `);
+    });
 
-/**
- * ⚡ RESET ROUTE: Nukes the session and restarts
- */
-app.get("/reset-session", (req, res) => {
-    addLog("⚠️ MANUAL RESET TRIGGERED: Deleting session...");
-    try {
-        fs.rmSync(path.join(__dirname, "session"), { recursive: true, force: true });
-        res.send("<h1>Session Deleted. Bot is restarting...</h1><script>setTimeout(()=>window.location.href='/', 5000)</script>");
-        // Force the process to exit; Render will automatically restart it
-        setTimeout(() => process.exit(0), 1000);
-    } catch (err) {
-        res.send("Error resetting session: " + err.message);
-    }
-});
+    /**
+     * ⚡ RESET ROUTE: Nukes the session and restarts
+     */
+    app.get("/reset-session", (req, res) => {
+        addLog("⚠️ MANUAL RESET TRIGGERED: Deleting session...");
+        try {
+            const sessionPath = path.join(__dirname, "session");
+            if (fs.existsSync(sessionPath)) {
+                fs.rmSync(sessionPath, { recursive: true, force: true });
+            }
+            res.send("<h1>Session Deleted. Bot is restarting...</h1><script>setTimeout(()=>window.location.href='/', 5000)</script>");
+            setTimeout(() => process.exit(0), 1000);
+        } catch (err) {
+            res.status(500).send("Error resetting session: " + err.message);
+        }
+    });
+
+    app.listen(PORT, () => {
+        addLog(`🌐 Web Server active on Port ${PORT}`);
+        startBot().catch(err => addLog(`🚀 Startup Error: ${err.message}`));
+    });
+}
+
+// Start the whole system
+startBot();
