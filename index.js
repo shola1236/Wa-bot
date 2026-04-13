@@ -496,7 +496,7 @@ async function startBot() {
             continue;
           }
 
-                  // Weather
+          // Weather
           if (cmd === ".weather") {
             if (!query) { await sock.sendMessage(from, { text: "Usage: .weather <city>" }); continue; }
             const res = await axios.get(`https://wttr.in/${encodeURIComponent(query)}?format=3`, { timeout: 8000 }).catch(() => null);
