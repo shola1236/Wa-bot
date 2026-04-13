@@ -1,504 +1,500 @@
 /**
- * ==============================================================================
- * 🚀 WHATSAPP BOT MASTER CONSOLE - ULTIMATE EDITION (V4.1.0)
- * ==============================================================================
- * Build Version: 4.1.0 (High-Stability for Render.com)
- * Security Architecture: EXCLUSIVE "fromMe" Gatekeeping
- * * FEATURES INCLUDED:
- * 1.  Strict Owner-Only Access (via Bot Account)
- * 2.  Gemini AI Integration (Manual & Auto-Mode)
- * 3.  Smart Context Memory (Remembers previous 5 messages)
- * 4.  Full Group Administration (Promote, Demote, Kick, KickAll)
- * 5.  Mass Communication Tools (TagAll, HideTag)
- * 6.  Automated Anti-Link System
- * 7.  External Utility APIs (Quotes, Jokes, Facts, Time, Date)
- * 8.  Enhanced Web Dashboard with CSS3 & Real-time Logs
- * * ⚠️ RENDER DEPLOYMENT NOTE: 
- * Ensure BOT_NUMBER and GEMINI_KEY are set in Environment Variables.
- * ==============================================================================
+ * ============================================================
+ * 🚀 WHATSAPP BOT — PRODUCTION EDITION
+ * ============================================================
+ * FIXES:
+ *  - Double execution bug (was called twice on startup)
+ *  - Reconnect loop (recursive calls stacked event listeners)
+ *  - Owner-only gating in groups, DMs, and self-DM
+ *  - Stable keepalive + exponential-backoff reconnect
+ * NEW:
+ *  - .vv stealth view-once revealer → DM, deletes command
+ *  - .delete, .mute, .unmute, .link, .revoke
+ *  - .setname, .setdesc, .groupinfo
+ *  - .weather, .info, better .alive w/ uptime
+ *  - Auto-reply only triggers in DMs (not own chat spam)
+ * ============================================================
  */
 
-const express = require("express");
-const pino = require("pino");
-const axios = require("axios");
-const path = require("path");
-const fs = require("fs");
-const { 
-    default: makeWASocket, 
-    useMultiFileAuthState, 
-    DisconnectReason, 
-    fetchLatestBaileysVersion, 
-    delay, 
-    jidDecode,
-    generateForwardMessageContent, 
-    prepareWAMessageMedia, 
-    generateWAMessageFromContent, 
-    generateMessageID, 
-    downloadContentFromMessage, 
-    jidNormalizedUser, 
-    proto 
+"use strict";
+
+const express  = require("express");
+const pino     = require("pino");
+const axios    = require("axios");
+const path     = require("path");
+const fs       = require("fs");
+
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  delay,
+  jidDecode,
+  downloadContentFromMessage,
 } = require("@whiskeysockets/baileys");
-const makeInMemoryStore = require("@whiskeysockets/baileys").makeInMemoryStore || (() => ({ bind: () => {}, readFromFile: () => {}, writeToFile: () => {} }));
 
-// --- SYSTEM INITIALIZATION ---
-const app = express();
-const PORT = process.env.PORT || 3000;
+// ─── CONFIG ────────────────────────────────────────────────────────────────
 
-// Environment Variables Extraction
-const BOT_NUMBER = process.env.BOT_NUMBER;
-const GEMINI_KEY = process.env.GEMINI_KEY;
+const app      = express();
+const PORT     = process.env.PORT || 3000;
+const BOT_NUM  = (process.env.BOT_NUMBER || "").replace(/[^0-9]/g, "");
+const GEM_KEY  = process.env.GEMINI_KEY;
 
-// Global State Management
-let autoReplyActive = false; 
-let antiLinkActive = true;
-let chatMemory = {}; 
-let statusLogs = [];
-let webPairingCode = "System Booting... Waiting for Pairing Engine.";
+if (!BOT_NUM || !GEM_KEY) {
+  console.error("❌ FATAL: BOT_NUMBER and GEMINI_KEY must be set.");
+  process.exit(1);
+}
 
-// Baileys Store to maintain session memory and message tracking
-const store = makeInMemoryStore({ 
-    logger: pino().child({ level: 'silent', stream: 'store' }) 
-});
+// ─── STATE ─────────────────────────────────────────────────────────────────
 
-/**
- * 🧠 UTILITY: DECODE JID
- */
+let sock            = null;
+let isConnecting    = false;
+let reconnectTimer  = null;
+let autoReply       = false;
+let antiLink        = true;
+let chatMemory      = {};          // { jid: [str, ...] }
+let statusLogs      = [];
+let pairingDisplay  = "⏳ Booting…";
+
+// ─── HELPERS ───────────────────────────────────────────────────────────────
+
+function log(msg) {
+  const entry = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  console.log(entry);
+  statusLogs.unshift(entry);
+  if (statusLogs.length > 200) statusLogs.length = 200;
+}
+
 function decodeJid(jid) {
-    if (!jid) return jid;
-    if (/:\d+@/gi.test(jid)) {
-        let decode = jidDecode(jid) || {};
-        return decode.user && decode.server && decode.user + '@' + decode.server || jid;
-    } else return jid;
+  if (!jid) return jid;
+  if (/:\d+@/gi.test(jid)) {
+    const { user, server } = jidDecode(jid) || {};
+    return user && server ? `${user}@${server}` : jid;
+  }
+  return jid;
 }
 
-/**
- * 📝 ADVANCED LOGGING SYSTEM
- */
-function addLog(msg) {
-    const time = new Date().toLocaleTimeString();
-    const formattedLog = `[${time}] ${msg}`;
-    console.log(formattedLog); 
-    statusLogs.unshift(formattedLog); 
-    if (statusLogs.length > 100) statusLogs.pop(); 
+function ownerJid() {
+  return sock?.user?.id ? decodeJid(sock.user.id) : `${BOT_NUM}@s.whatsapp.net`;
 }
 
-// Critical Validation before Boot
-if (!BOT_NUMBER || !GEMINI_KEY) {
-    console.error("❌ CRITICAL FAILURE: Environment variables (BOT_NUMBER/GEMINI_KEY) missing.");
-    process.exit(1);
+function uptime() {
+  const s = Math.floor(process.uptime());
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m ${s % 60}s`;
 }
 
-/**
- * 🧠 GEMINI AI CORE WITH CONTEXT MEMORY
- */
-async function askGemini(prompt, userJid) {
-    try {
-        if (!chatMemory[userJid]) {
-            chatMemory[userJid] = [];
-        }
-
-        const context = chatMemory[userJid].join("\n");
-        const fullPrompt = context 
-            ? `Context of our last few messages:\n${context}\n\nNew User Input: ${prompt}` 
-            : `You are a helpful WhatsApp AI assistant. User says: ${prompt}`;
-
-        const response = await axios.post(
-            `https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key=${GEMINI_KEY}`,
-            {
-                contents: [{
-                    parts: [{ text: fullPrompt }]
-                }]
-            }
-        );
-        
-        if (response.data && response.data.candidates) {
-            const aiText = response.data.candidates[0].content.parts[0].text;
-            
-            // Update Memory (Keep last 5 exchanges)
-            chatMemory[userJid].push(`User: ${prompt}`);
-            chatMemory[userJid].push(`AI: ${aiText}`);
-            if (chatMemory[userJid].length > 10) chatMemory[userJid].splice(0, 2); 
-            
-            return aiText;
-        }
-        return "🤖 AI: I am currently processing too much data. Try again shortly.";
-    } catch (error) {
-        addLog(`⚠️ Gemini API Error: ${error.response?.data?.error?.message || error.message}`);
-        return "⚠️ AI engine error. Please check your API quota or connection.";
-    }
+// Extract plain text from any message type
+function getText(msg) {
+  const m = msg.message || {};
+  return (
+    m.conversation                              ||
+    m.extendedTextMessage?.text                 ||
+    m.imageMessage?.caption                     ||
+    m.videoMessage?.caption                     ||
+    m.documentMessage?.caption                  ||
+    m.buttonsResponseMessage?.selectedButtonId  ||
+    m.listResponseMessage?.singleSelectReply?.selectedRowId ||
+    ""
+  );
 }
 
-/**
- * 🚀 MAIN BOT EXECUTION ENGINE
- */
+// ─── GEMINI AI ──────────────────────────────────────────────────────────────
+
+async function askGemini(prompt, jid) {
+  if (!chatMemory[jid]) chatMemory[jid] = [];
+
+  const ctx = chatMemory[jid].slice(-10).join("\n");
+  const full = ctx
+    ? `Conversation so far:\n${ctx}\n\nUser: ${prompt}`
+    : `You are a helpful WhatsApp assistant. User: ${prompt}`;
+
+  try {
+    const res = await axios.post(
+      `https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key=${GEM_KEY}`,
+      { contents: [{ parts: [{ text: full }] }] },
+      { timeout: 20_000 }
+    );
+    const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) return "🤖 No response from AI.";
+    chatMemory[jid].push(`User: ${prompt}`, `AI: ${text}`);
+    if (chatMemory[jid].length > 10) chatMemory[jid].splice(0, 2);
+    return text;
+  } catch (e) {
+    log(`⚠️ Gemini: ${e.response?.data?.error?.message || e.message}`);
+    return "⚠️ AI error — check API quota.";
+  }
+}
+
+// ─── VIEW-ONCE DOWNLOADER ───────────────────────────────────────────────────
+
+async function downloadViewOnce(quotedMsg) {
+  // quotedMsg is the raw .message object from contextInfo.quotedMessage
+  const wrap =
+    quotedMsg?.viewOnceMessage?.message          ||
+    quotedMsg?.viewOnceMessageV2?.message        ||
+    quotedMsg?.viewOnceMessageV2Extension?.message;
+
+  if (!wrap) return null;
+
+  const mediaKey = Object.keys(wrap).find(k =>
+    k === "imageMessage" || k === "videoMessage" || k === "audioMessage"
+  );
+  if (!mediaKey) return null;
+
+  const mediaMeta = wrap[mediaKey];
+  const kind      = mediaKey.replace("Message", ""); // "image" | "video" | "audio"
+
+  try {
+    const stream = await downloadContentFromMessage(mediaMeta, kind);
+    const chunks = [];
+    for await (const chunk of stream) chunks.push(chunk);
+    return { buffer: Buffer.concat(chunks), kind, mime: mediaMeta.mimetype };
+  } catch (e) {
+    log(`❌ VV download: ${e.message}`);
+    return null;
+  }
+}
+
+// ─── BOT CORE ───────────────────────────────────────────────────────────────
+
 async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState("session");
-    const { version } = await fetchLatestBaileysVersion();
+  if (isConnecting) return;
+  isConnecting = true;
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 
-    const sock = makeWASocket({
-        version,
-        logger: pino({ level: "silent" }),
-        auth: state,
-        printQRInTerminal: false,
-        browser: ["Ubuntu", "Chrome", "20.0.04"],
-        syncFullHistory: false,
-        markOnlineOnConnect: true,
-        connectTimeoutMs: 60000,
-        keepAliveIntervalMs: 30000,
-        generateHighQualityLinkPreview: true,
-        getMessage: async (key) => {
-            if (store) {
-                const msg = await store.loadMessage(key.remoteJid, key.id);
-                return msg?.message || undefined;
-            }
-            return { conversation: "Hello, I am the bot" };
-        }
+  try {
+    const { state, saveCreds } = await useMultiFileAuthState("session");
+    const { version }          = await fetchLatestBaileysVersion();
+
+    sock = makeWASocket({
+      version,
+      logger:                   pino({ level: "silent" }),
+      auth:                     state,
+      printQRInTerminal:        false,
+      browser:                  ["Ubuntu", "Chrome", "20.0.04"],
+      syncFullHistory:          false,
+      markOnlineOnConnect:      false,   // don't broadcast presence
+      connectTimeoutMs:         60_000,
+      keepAliveIntervalMs:      10_000,  // ping every 10s → stable
+      retryRequestDelayMs:      2_000,
+      maxMsgRetryCount:         3,
+      generateHighQualityLinkPreview: false,
+      getMessage:               async () => ({ conversation: "" }),
     });
 
-    store.bind(sock.ev);
     sock.ev.on("creds.update", saveCreds);
 
-    sock.ev.on("connection.update", async (update) => {
-        const { connection, lastDisconnect } = update;
+    // ── Connection state ──────────────────────────────────────────────────
+    sock.ev.on("connection.update", async ({ connection, lastDisconnect }) => {
+      if (connection === "open") {
+        isConnecting    = false;
+        sock.user.id    = decodeJid(sock.user.id);
+        pairingDisplay  = "✅ Bot Online!";
+        log(`✅ Connected as ${sock.user.id}`);
+        await sock.sendMessage(ownerJid(), {
+          text: `🚀 *Bot Online*\n📅 ${new Date().toLocaleString()}\nType *.menu* to see commands.`
+        }).catch(() => {});
+      }
 
-        if (connection === "close") {
-            const reason = lastDisconnect?.error?.output?.statusCode;
-            addLog(`🔄 Connection Closed. Reason: ${reason}`);
-            const shouldReconnect = reason !== DisconnectReason.loggedOut;
-            if (shouldReconnect) {
-                addLog("♻️ Attempting automatic reconnection...");
-                startBot();
-            } else {
-                addLog("❌ Logged out. Delete 'session' folder and restart.");
-            }
+      if (connection === "close") {
+        isConnecting = false;
+        const code   = lastDisconnect?.error?.output?.statusCode;
+        log(`🔴 Disconnected — code ${code}`);
+
+        if (code === DisconnectReason.loggedOut) {
+          pairingDisplay = "❌ Logged out. Reset session.";
+          log("❌ Logged out. Delete 'session' folder and restart.");
+          return;
         }
 
-        if (connection === "open") {
-            addLog("✅ WHATSAPP CONNECTION ESTABLISHED");
-            sock.user.id = decodeJid(sock.user.id);
-            webPairingCode = "✅ Bot is Online and Guarding!";
-            
-            // Send startup notification to self
-            await sock.sendMessage(sock.user.id, { 
-                text: "🚀 *Bot System Online*\n\nHost: Render Cloud\nTime: " + new Date().toLocaleString() + "\nType *.menu* to begin." 
-            });
-        }
+        // Exponential back-off: 3s, 6s, 12s… capped at 30s
+        const wait = Math.min(3000 * (2 ** (Math.floor(Math.random() * 3))), 30_000);
+        log(`♻️ Reconnecting in ${wait / 1000}s…`);
+        pairingDisplay = `🔄 Reconnecting in ${wait / 1000}s…`;
+        reconnectTimer = setTimeout(startBot, wait);
+      }
     });
 
-    // Pairing Code Sequence
+    // ── Pairing ───────────────────────────────────────────────────────────
     if (!sock.authState.creds.registered) {
-        setTimeout(async () => {
-            const cleanedNumber = BOT_NUMBER.replace(/[^0-9]/g, "");
-            try {
-                addLog(`🔑 Requesting pairing code for ${cleanedNumber}...`);
-                const code = await sock.requestPairingCode(cleanedNumber);
-                webPairingCode = `🔥 PAIR CODE: ${code}`;
-                addLog(`🔑 PAIRING CODE: ${code}`);
-            } catch (err) {
-                addLog("❌ Pairing Engine Error. Check BOT_NUMBER.");
-            }
-        }, 8000);
+      setTimeout(async () => {
+        try {
+          const code     = await sock.requestPairingCode(BOT_NUM);
+          pairingDisplay = `🔥 PAIRING CODE: ${code}`;
+          log(`🔑 Pairing code: ${code}`);
+        } catch (e) {
+          log(`❌ Pairing error: ${e.message}`);
+          isConnecting = false;
+        }
+      }, 5_000);
     }
 
-    /**
-     * 📩 MESSAGE UPSERT HANDLER
-     */
+    // ── Message handler ───────────────────────────────────────────────────
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
+
+      // 'notify' = new incoming messages only; skip history replay on reconnect
+      if (type !== "notify") return;
+
+      for (const msg of messages) {
         try {
-            const msg = messages[0];
-            if (!msg.message || msg.key.remoteJid === 'status@broadcast') return;
+          if (!msg?.message)                                  continue;
+          if (msg.key.remoteJid === "status@broadcast")       continue;
 
-            const from = msg.key.remoteJid;
-            const isGroup = from.endsWith("@g.us");
-            const isFromMe = msg.key.fromMe;
-            const sender = isGroup ? msg.key.participant : from;
-            const botNumber = decodeJid(sock.user.id);
+          const from     = msg.key.remoteJid;
+          const isGroup  = from.endsWith("@g.us");
+          const fromMe   = msg.key.fromMe;    // true = sent by the bot's own account
 
-            // Content Extraction
-            const messageType = Object.keys(msg.message)[0];
-            const messageText = (messageType === 'conversation') ? msg.message.conversation :
-                                (messageType === 'extendedTextMessage') ? msg.message.extendedTextMessage.text :
-                                (messageType === 'imageMessage') ? msg.message.imageMessage.caption :
-                                (messageType === 'videoMessage') ? msg.message.videoMessage.caption : "";
+          const rawText  = getText(msg).trim();
+          const lower    = rawText.toLowerCase();
+          const parts    = lower.split(/\s+/);
+          const cmd      = parts[0];
+          const args     = rawText.split(/\s+/).slice(1);
+          const query    = args.join(" ");
 
-            const cleanText = messageText.trim();
-            const command = cleanText.split(/\s+/)[0].toLowerCase();
-            const args = cleanText.split(/\s+/).slice(1);
-            const query = args.join(" ");
+          if (rawText) log(`📩 [${fromMe ? "ME" : from.split("@")[0]}] ${rawText.substring(0, 50)}`);
 
-            if (cleanText) {
-                addLog(`📩 [${isFromMe ? 'OWNER' : 'USER'}] ${from.split('@')[0]}: ${cleanText.substring(0, 30)}`);
+          // ── Anti-link (runs for all group members, before owner gate) ──
+          if (isGroup && antiLink && !fromMe &&
+              (rawText.includes("chat.whatsapp.com") || rawText.includes("whatsapp.com/channel"))) {
+            await sock.sendMessage(from, { delete: msg.key }).catch(() => {});
+            await sock.sendMessage(from, { text: "🚫 Links are not allowed here." });
+            continue;
+          }
+
+          // ── OWNER GATE ─────────────────────────────────────────────────
+          // All commands (anything starting with ".") are owner-only.
+          // Non-command messages from others: only trigger AI if autoReply on + it's a DM.
+          if (!fromMe) {
+            if (!isGroup && autoReply && !cmd.startsWith(".") && rawText.length > 2) {
+              const ai = await askGemini(rawText, from);
+              await sock.sendMessage(from, { text: `🧠 ${ai}` });
+            }
+            continue;
+          }
+
+          // ─────────────────────────────────────────────────────────────
+          // OWNER-ONLY COMMANDS FROM HERE
+          // ─────────────────────────────────────────────────────────────
+
+          // ── .menu / .help ──────────────────────────────────────────────
+          if (cmd === ".menu" || cmd === ".help") {
+            await sock.sendMessage(from, { text: `👑 *BOT MASTER CONSOLE*
+━━━━━━━━━━━━━━━━━━━━
+
+*⚡ AUTOMATION*
+• .autoreply on|off  — AI auto-reply in DMs
+• .antilink on|off   — Block group links
+  _AI: ${autoReply ? "🟢 ON" : "🔴 OFF"} | Links: ${antiLink ? "🟢 ON" : "🔴 OFF"}_
+
+*🕵️ STEALTH*
+• .vv  — Reply to view-once → sends to your DM, deletes cmd
+
+*🛡️ GROUP ADMIN* _(use in a group)_
+• .promote @user | .demote @user
+• .kick @user    | .kickall
+• .tagall [msg]  | .hidetag [msg]
+• .mute          | .unmute
+• .link          | .revoke
+• .setname <txt> | .setdesc <txt>
+• .groupinfo     | .delete _(reply)_
+
+*🧠 AI*
+• .ai <query>  — Ask Gemini
+• .clear       — Reset AI memory
+
+*🛠️ UTILITIES*
+• .ping   | .alive  | .uptime
+• .time   | .date   | .info
+• .weather <city>
+
+*🎉 EXTRAS*
+• .quote | .joke | .fact
+• .flip  | .dice | .8ball
+
+*⚙️ SYSTEM*
+• .restart — Reconnect bot` });
+            continue;
+          }
+
+          // ── Automation toggles ─────────────────────────────────────────
+          if (cmd === ".autoreply") {
+            autoReply = query.toLowerCase() === "on";
+            await sock.sendMessage(from, { text: `🤖 Auto-reply: *${autoReply ? "ON 🟢" : "OFF 🔴"}*` });
+            continue;
+          }
+          if (cmd === ".antilink") {
+            antiLink = query.toLowerCase() === "on";
+            await sock.sendMessage(from, { text: `🛡️ Anti-link: *${antiLink ? "ON 🟢" : "OFF 🔴"}*` });
+            continue;
+          }
+
+          // ── AI ─────────────────────────────────────────────────────────
+          if (cmd === ".ai" || cmd === ".gpt") {
+            if (!query) { await sock.sendMessage(from, { text: "Usage: .ai <question>" }); continue; }
+            await sock.sendMessage(from, { text: "_Thinking…_" });
+            const res = await askGemini(query, from);
+            await sock.sendMessage(from, { text: `🧠 ${res}` });
+            continue;
+          }
+          if (cmd === ".clear") {
+            chatMemory[from] = [];
+            await sock.sendMessage(from, { text: "🧹 AI memory cleared." });
+            continue;
+          }
+
+          // ── .vv — STEALTH VIEW-ONCE REVEAL ────────────────────────────
+          if (cmd === ".vv") {
+            const ctx    = msg.message?.extendedTextMessage?.contextInfo;
+            const quoted = ctx?.quotedMessage;
+
+            if (!quoted) {
+              await sock.sendMessage(from, { text: "⚠️ Reply to a view-once message with .vv" });
+              continue;
             }
 
-            // --- GLOBAL SECURITY GATEKEEPER ---
-            if (command.startsWith(".") && !isFromMe) {
-                addLog(`🚫 Blocked: ${command} from unauthorized sender.`);
-                return;
+            const media = await downloadViewOnce(quoted);
+
+            if (!media) {
+              await sock.sendMessage(from, { text: "⚠️ Couldn't download — not a view-once or already expired." });
+              continue;
             }
 
-            // --- ANTI-LINK SYSTEM ---
-            if (isGroup && antiLinkActive && cleanText.includes("chat.whatsapp.com") && !isFromMe) {
-                await sock.sendMessage(from, { delete: msg.key });
-                return await sock.sendMessage(from, { text: "🚫 *Link Detected:* External group links are forbidden." });
+            // 1. Delete the .vv command FIRST (stealth — other person won't see it)
+            await sock.sendMessage(from, { delete: msg.key }).catch(() => {});
+
+            // 2. Send media to owner's DM silently
+            const caption = `👁️ *View-Once* captured\n📍 From: ${from.split("@")[0]}`;
+            if (media.kind === "image") {
+              await sock.sendMessage(ownerJid(), { image: media.buffer, caption });
+            } else if (media.kind === "video") {
+              await sock.sendMessage(ownerJid(), { video: media.buffer, caption, mimetype: media.mime });
+            } else if (media.kind === "audio") {
+              await sock.sendMessage(ownerJid(), { audio: media.buffer, mimetype: media.mime });
             }
+            continue;
+          }
 
-            // --- COMMAND REGISTRY ---
+          // ── GROUP COMMANDS ─────────────────────────────────────────────
+          if (isGroup) {
+            const meta  = await sock.groupMetadata(from).catch(() => null);
+            if (!meta) continue;
+            const parts = meta.participants;
+            const ctx   = msg.message?.extendedTextMessage?.contextInfo;
+            const user  = ctx?.mentionedJid?.[0] || ctx?.participant;
 
-            // 1. SYSTEM INFO
-            if (command === ".menu" || command === ".help") {
-                const menu = `👑 *MASTER CONSOLE V4.1* 👑
-
-*--- ⚡ AUTOMATION ---*
-.autoreply on | off  - AI Mode
-.antilink on | off   - Link Guard
-_AutoReply: ${autoReplyActive ? '🟢' : '🔴'}_
-
-*--- 🛡️ ADMIN POWER ---*
-.promote    - Grant Admin
-.demote     - Remove Admin
-.kick       - Remove User
-.kickall    - Wipe Group
-.tagall     - Mention All
-.hidetag    - Ghost Tag
-
-*--- 🧠 AI & ENGINE ---*
-.ai <query> - Ask Gemini
-.clear      - Reset AI
-.ping       - Latency
-.alive      - System Info
-
-*--- 🛠️ UTILITIES ---*
-.time | .date | .owner
-.quote | .joke | .fact
-
-*--- 🎭 FUN ---*
-.flip | .dice | .8ball`;
-                return await sock.sendMessage(from, { text: menu });
+            if (cmd === ".promote") {
+              if (!user) { await sock.sendMessage(from, { text: "⚠️ Tag or reply to a user." }); continue; }
+              await sock.groupParticipantsUpdate(from, [user], "promote");
+              await sock.sendMessage(from, { text: `✅ @${user.split("@")[0]} promoted to admin.`, mentions: [user] });
+              continue;
             }
-
-            // 2. AUTOMATION CONTROLS
-            if (command === ".autoreply") {
-                if (!query) return await sock.sendMessage(from, { text: "Usage: .autoreply on/off" });
-                autoReplyActive = query === "on";
-                return await sock.sendMessage(from, { text: `🤖 AI Smart Mode: *${autoReplyActive ? 'ENABLED' : 'DISABLED'}*` });
+            if (cmd === ".demote") {
+              if (!user) { await sock.sendMessage(from, { text: "⚠️ Tag or reply to a user." }); continue; }
+              await sock.groupParticipantsUpdate(from, [user], "demote");
+              await sock.sendMessage(from, { text: `✅ @${user.split("@")[0]} demoted.`, mentions: [user] });
+              continue;
             }
-
-            if (command === ".antilink") {
-                antiLinkActive = query === "on";
-                return await sock.sendMessage(from, { text: `🛡️ Link Guard: *${antiLinkActive ? 'ENABLED' : 'DISABLED'}*` });
+            if (cmd === ".kick") {
+              if (!user) { await sock.sendMessage(from, { text: "⚠️ Tag or reply to a user." }); continue; }
+              await sock.groupParticipantsUpdate(from, [user], "remove");
+              await sock.sendMessage(from, { text: `👢 @${user.split("@")[0]} removed.`, mentions: [user] });
+              continue;
             }
-
-            // 3. AI EXECUTION
-            if (!command.startsWith(".") && autoReplyActive && isFromMe && cleanText.length > 2) {
-                const aiRes = await askGemini(cleanText, from);
-                return await sock.sendMessage(from, { text: `🧠 *Assistant:* ${aiRes}` });
+            if (cmd === ".kickall") {
+              await sock.sendMessage(from, { text: "☢️ *Purge starting…*" });
+              const targets = parts.filter(p => !p.admin && p.id !== ownerJid());
+              for (const p of targets) {
+                await sock.groupParticipantsUpdate(from, [p.id], "remove").catch(() => {});
+                await delay(700);
+              }
+              await sock.sendMessage(from, { text: `🧹 Removed ${targets.length} members.` });
+              continue;
             }
-
-            if (command === ".ai" || command === ".gpt") {
-                if (!query) return await sock.sendMessage(from, { text: "❓ Ask me something." });
-                await sock.sendMessage(from, { text: "_Thinking..._" });
-                const aiRes = await askGemini(query, from);
-                return await sock.sendMessage(from, { text: aiRes });
+            if (cmd === ".tagall") {
+              const mentions = parts.map(p => p.id);
+              let txt = `📢 *${query || "Attention!"}*\n\n`;
+              for (const p of parts) txt += `• @${p.id.split("@")[0]}\n`;
+              await sock.sendMessage(from, { text: txt, mentions });
+              continue;
             }
-
-            if (command === ".clear") {
-                chatMemory[from] = [];
-                return await sock.sendMessage(from, { text: "🧹 *AI Memory Cleared.*" });
+            if (cmd === ".hidetag") {
+              await sock.sendMessage(from, { text: query || "📣", mentions: parts.map(p => p.id) });
+              continue;
             }
-
-            // 4. ADMIN TOOLS
-            if (isGroup) {
-                const groupMetadata = await sock.groupMetadata(from);
-                const participants = groupMetadata.participants;
-
-                if (command === ".promote") {
-                    let user = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || msg.message.extendedTextMessage?.contextInfo?.participant;
-                    if (!user) return await sock.sendMessage(from, { text: "⚠️ Reply to or tag a user." });
-                    await sock.groupParticipantsUpdate(from, [user], "promote");
-                    return await sock.sendMessage(from, { text: "✅ Done." });
-                }
-
-                if (command === ".demote") {
-                    let user = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || msg.message.extendedTextMessage?.contextInfo?.participant;
-                    if (!user) return await sock.sendMessage(from, { text: "⚠️ Reply to or tag a user." });
-                    await sock.groupParticipantsUpdate(from, [user], "demote");
-                    return await sock.sendMessage(from, { text: "✅ Done." });
-                }
-
-                if (command === ".kick") {
-                    let user = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || msg.message.extendedTextMessage?.contextInfo?.participant;
-                    if (!user) return await sock.sendMessage(from, { text: "⚠️ Tag the user." });
-                    await sock.groupParticipantsUpdate(from, [user], "remove");
-                    return await sock.sendMessage(from, { text: "👢 Removed." });
-                }
-
-                if (command === ".kickall") {
-                    await sock.sendMessage(from, { text: "☢️ *PURGE STARTING...*" });
-                    for (let p of participants) {
-                        if (p.id !== botNumber && !p.admin) {
-                            await sock.groupParticipantsUpdate(from, [p.id], "remove");
-                            await delay(800);
-                        }
-                    }
-                    return await sock.sendMessage(from, { text: "🧹 Purge complete." });
-                }
-
-                if (command === ".tagall") {
-                    let txt = `📢 *Attention Participants*\n\n*Msg:* ${query || 'None'}\n\n`;
-                    let mentions = [];
-                    for (let p of participants) {
-                        mentions.push(p.id);
-                        txt += `• @${p.id.split("@")[0]}\n`;
-                    }
-                    return await sock.sendMessage(from, { text: txt, mentions });
-                }
-
-                if (command === ".hidetag") {
-                    const mentions = participants.map(p => p.id);
-                    return await sock.sendMessage(from, { text: query || "Hidden alert!", mentions });
-                }
+            if (cmd === ".mute") {
+              await sock.groupSettingUpdate(from, "announcement");
+              await sock.sendMessage(from, { text: "🔇 Group muted (only admins can send)." });
+              continue;
             }
-
-            // 5. UTILITIES
-            if (command === ".ping") {
-                const start = Date.now();
-                await sock.sendMessage(from, { text: "Calculating..." });
-                const end = Date.now();
-                return await sock.sendMessage(from, { text: `🚀 *Latency:* ${end - start}ms` });
+            if (cmd === ".unmute") {
+              await sock.groupSettingUpdate(from, "not_announcement");
+              await sock.sendMessage(from, { text: "🔊 Group unmuted." });
+              continue;
             }
-
-            if (command === ".alive") {
-                return await sock.sendMessage(from, { text: "🟢 *Status:* System Operational\n☁️ *Host:* Render Cloud\n⚡ *Engine:* Baileys v5" });
+            if (cmd === ".link") {
+              const code = await sock.groupInviteCode(from);
+              await sock.sendMessage(from, { text: `🔗 *Invite link:*\nhttps://chat.whatsapp.com/${code}` });
+              continue;
             }
-
-            if (command === ".time") return await sock.sendMessage(from, { text: `🕙 ${new Date().toLocaleTimeString()}` });
-            if (command === ".date") return await sock.sendMessage(from, { text: `📅 ${new Date().toDateString()}` });
-
-            // 6. EXTERNAL APIS
-            if (command === ".quote") {
-                const res = await axios.get("https://api.quotable.io/random").catch(() => null);
-                if (!res) return await sock.sendMessage(from, { text: "❌ API Offline." });
-                return await sock.sendMessage(from, { text: `“${res.data.content}”\n— *${res.data.author}*` });
+            if (cmd === ".revoke") {
+              await sock.groupRevokeInvite(from);
+              await sock.sendMessage(from, { text: "🔄 Invite link revoked." });
+              continue;
             }
-
-            if (command === ".joke") {
-                const res = await axios.get("https://official-joke-api.appspot.com/random_joke").catch(() => null);
-                if (!res) return await sock.sendMessage(from, { text: "❌ API Offline." });
-                return await sock.sendMessage(from, { text: `*${res.data.setup}*\n\n${res.data.punchline}` });
+            if (cmd === ".setname") {
+              if (!query) { await sock.sendMessage(from, { text: "Usage: .setname <new name>" }); continue; }
+              await sock.groupUpdateSubject(from, query);
+              await sock.sendMessage(from, { text: `✅ Group renamed to *${query}*` });
+              continue;
             }
-
-            if (command === ".fact") {
-                const res = await axios.get("https://uselessfacts.jsph.pl/random.json?language=en").catch(() => null);
-                if (!res) return await sock.sendMessage(from, { text: "❌ API Offline." });
-                return await sock.sendMessage(from, { text: `💡 *Fact:* ${res.data.text}` });
+            if (cmd === ".setdesc") {
+              if (!query) { await sock.sendMessage(from, { text: "Usage: .setdesc <description>" }); continue; }
+              await sock.groupUpdateDescription(from, query);
+              await sock.sendMessage(from, { text: "✅ Description updated." });
+              continue;
             }
-
-            // 7. FUN
-            if (command === ".flip") return await sock.sendMessage(from, { text: `🪙 Result: *${Math.random() > 0.5 ? "HEADS" : "TAILS"}*` });
-            if (command === ".dice") return await sock.sendMessage(from, { text: `🎲 Roll: *${Math.floor(Math.random() * 6) + 1}*` });
-            if (command === ".8ball") {
-                const res = ["Yes", "No", "Maybe", "Ask later", "Definitely", "Highly Doubtful"];
-                return await sock.sendMessage(from, { text: `🎱 *Oracle:* ${res[Math.floor(Math.random() * res.length)]}` });
+            if (cmd === ".groupinfo") {
+              const created = new Date(meta.creation * 1000).toLocaleDateString();
+              const admins  = parts.filter(p => p.admin).map(p => `• @${p.id.split("@")[0]}`).join("\n");
+              await sock.sendMessage(from, {
+                text: `📋 *Group Info*\n\n📌 Name: ${meta.subject}\n👥 Members: ${parts.length}\n📅 Created: ${created}\n\n👑 *Admins:*\n${admins}`,
+                mentions: parts.filter(p => p.admin).map(p => p.id)
+              });
+              continue;
             }
-
-        } catch (err) {
-            addLog(`❌ Logic Error: ${err.message}`);
-        }
-    });
-
-        // Auto-Greeting
-    sock.ev.on("group-participants.update", async (data) => {
-        try {
-            const metadata = await sock.groupMetadata(data.id);
-            for (const user of data.participants) {
-                const userNum = user.split("@")[0];
-                if (data.action === "add") {
-                    await sock.sendMessage(data.id, { text: `👋 Welcome @${userNum} to ${metadata.subject}!`, mentions: [user] });
-                }
+            if (cmd === ".delete" || cmd === ".del") {
+              if (!ctx?.stanzaId) { await sock.sendMessage(from, { text: "⚠️ Reply to a message to delete it." }); continue; }
+              await sock.sendMessage(from, { delete: { remoteJid: from, id: ctx.stanzaId, participant: ctx.participant } }).catch(() => {});
+              continue;
             }
-        } catch (e) { console.log(e); }
-    });
-} // This closes the startBot function
+          }
 
-/**
- * 🌐 ENHANCED WEB CONSOLE WITH RESET CONTROL
- */
-app.get("/", (req, res) => {
-    res.send(`
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Bot Pro Console</title>
-        <style>
-            body { background: #0c0c0c; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; }
-            .container { max-width: 1000px; margin: auto; }
-            .header { text-align: center; border-bottom: 2px solid #25D366; padding: 20px; }
-            .status-box { background: #1a1a1a; padding: 20px; border-radius: 15px; text-align: center; margin: 20px 0; border: 1px solid #333; }
-            .status-box h2 { color: #25D366; margin: 0; }
-            .btn-reset { 
-                background: #ff4b2b; color: white; border: none; padding: 10px 20px; 
-                border-radius: 5px; cursor: pointer; font-weight: bold; margin-top: 10px;
-                transition: 0.3s;
-            }
-            .btn-reset:hover { background: #ff416c; transform: scale(1.05); }
-            .terminal { background: #000; border-radius: 10px; padding: 20px; height: 400px; overflow-y: auto; border: 1px solid #444; font-family: monospace; }
-            .log { margin-bottom: 10px; border-bottom: 1px solid #111; padding-bottom: 5px; color: #00ff41; }
-            .footer { text-align: center; margin-top: 30px; font-size: 0.8em; color: #555; }
-            ::-webkit-scrollbar { width: 8px; }
-            ::-webkit-scrollbar-thumb { background: #25D366; border-radius: 10px; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header"><h1>BOT PRO CONSOLE</h1></div>
-            <div class="status-box">
-                <h2>${webPairingCode}</h2>
-                <button class="btn-reset" onclick="confirmReset()">🔄 Request New Pairing Code</button>
-            </div>
-            <div class="terminal">
-                ${statusLogs.map(l => `<div class="log">${l}</div>`).join('')}
-            </div>
-            <div class="footer">Built for Stability | Node.js v20.x | Baileys v5</div>
-        </div>
-        <script>
-            function confirmReset() {
-                if(confirm("This will delete your current session and restart the bot. Continue?")) {
-                    window.location.href = "/reset-session";
-                }
-            }
-            setTimeout(() => location.reload(), 15000);
-        </script>
-    </body>
-    </html>
-    `);
-});
+          // ── UTILITIES ──────────────────────────────────────────────────
+          if (cmd === ".ping") {
+            const t = Date.now();
+            await sock.sendMessage(from, { text: `🏓 Pong! *${Date.now() - t}ms*` });
+            continue;
+          }
+          if (cmd === ".alive") {
+            await sock.sendMessage(from, { text: `🟢 *Bot Alive*\n⏱️ Uptime: ${uptime()}\n📡 Engine: Baileys v6\n☁️ Host: Render` });
+            continue;
+          }
+          if (cmd === ".uptime") {
+            await sock.sendMessage(from, { text: `⏱️ *Uptime:* ${uptime()}` });
+            continue;
+          }
+          if (cmd === ".time")  { await sock.sendMessage(from, { text: `🕙 *${new Date().toLocaleTimeString()}*` }); continue; }
+          if (cmd === ".date")  { await sock.sendMessage(from, { text: `📅 *${new Date().toDateString()}*` }); continue; }
+          if (cmd === ".info") {
+            await sock.sendMessage(from, { text: `👤 *Owner Info*\n📱 Number: ${BOT_NUM}\n👑 Role: Owner/Bot` });
+            continue;
+          }
+          if (cmd === ".restart") {
+            await sock.sendMessage(from, { text: "🔄 Reconnecting…" });
+            await sock.logout().catch(() => {});
+            continue;
+          }
 
-/**
- * ⚡ RESET ROUTE: Nukes the session and restarts
- */
-app.get("/reset-session", (req, res) => {
-    addLog("⚠️ MANUAL RESET TRIGGERED: Deleting session...");
-    try {
-        const sessionPath = path.join(__dirname, "session");
-        if (fs.existsSync(sessionPath)) {
-            fs.rmSync(sessionPath, { recursive: true, force: true });
-        }
-        res.send("<h1>Session Deleted. Bot is restarting...</h1><script>setTimeout(()=>window.location.href='/', 5000)</script>");
-        setTimeout(() => process.exit(0), 1000);
-    } catch (err) {
-        res.status(500).send("Error resetting session: " + err.message);
-    }
-});
-
-/**
- * 🚀 SERVER STARTUP
- */
-app.listen(PORT, () => {
-    addLog(`🌐 Web Server active on Port ${PORT}`);
-    startBot().catch(err => addLog(`🚀 Startup Error: ${err.message}`));
-});
-
-// Final execution trigger to wake up the logic
-startBot();
+          // Weather
+          if (cmd === ".we
