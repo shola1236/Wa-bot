@@ -496,5 +496,127 @@ async function startBot() {
             continue;
           }
 
-          // Weather
-          if (cmd === ".we
+                  // Weather
+          if (cmd === ".weather") {
+            if (!query) { await sock.sendMessage(from, { text: "Usage: .weather <city>" }); continue; }
+            const res = await axios.get(`https://wttr.in/${encodeURIComponent(query)}?format=3`, { timeout: 8000 }).catch(() => null);
+            await sock.sendMessage(from, { text: res ? `🌤️ ${res.data}` : "❌ Weather API offline." });
+            continue;
+          }
+
+          // External APIs
+          if (cmd === ".quote") {
+            const res = await axios.get("https://api.quotable.io/random", { timeout: 8000 }).catch(() => null);
+            await sock.sendMessage(from, { text: res ? `💬 _"${res.data.content}"_\n— *${res.data.author}*` : "❌ API offline." });
+            continue;
+          }
+          if (cmd === ".joke") {
+            const res = await axios.get("https://official-joke-api.appspot.com/random_joke", { timeout: 8000 }).catch(() => null);
+            await sock.sendMessage(from, { text: res ? `😂 *${res.data.setup}*\n\n${res.data.punchline}` : "❌ API offline." });
+            continue;
+          }
+          if (cmd === ".fact") {
+            const res = await axios.get("https://uselessfacts.jsph.pl/random.json?language=en", { timeout: 8000 }).catch(() => null);
+            await sock.sendMessage(from, { text: res ? `💡 *Fact:* ${res.data.text}` : "❌ API offline." });
+            continue;
+          }
+
+          // Fun
+          if (cmd === ".flip")  { await sock.sendMessage(from, { text: `🪙 *${Math.random() > 0.5 ? "HEADS" : "TAILS"}*` }); continue; }
+          if (cmd === ".dice")  { await sock.sendMessage(from, { text: `🎲 Rolled: *${Math.floor(Math.random() * 6) + 1}*` }); continue; }
+          if (cmd === ".8ball") {
+            const a = ["Yes 🟢","No 🔴","Maybe 🟡","Ask later ⏳","Definitely ✅","Highly doubtful ❌","Without a doubt 💯","My sources say no 🚫","Signs point to yes 🔮","Cannot predict now 🌫️"];
+            await sock.sendMessage(from, { text: `🎱 *${a[Math.floor(Math.random() * a.length)]}*` });
+            continue;
+          }
+
+          // Auto-reply for owner's own messages (when autoreply is ON)
+          if (autoReply && !cmd.startsWith(".") && rawText.length > 2) {
+            const ai = await askGemini(rawText, from);
+            await sock.sendMessage(from, { text: `🧠 ${ai}` });
+          }
+
+        } catch (err) {
+          log(`❌ Handler error: ${err.message}`);
+        }
+      }
+    });
+
+    // ── Group welcome ──────────────────────────────────────────────────────
+    sock.ev.on("group-participants.update", async (data) => {
+      if (data.action !== "add") return;
+      try {
+        const meta = await sock.groupMetadata(data.id).catch(() => null);
+        if (!meta) return;
+        for (const user of data.participants) {
+          await sock.sendMessage(data.id, {
+            text: `👋 Welcome @${user.split("@")[0]} to *${meta.subject}*!`,
+            mentions: [user]
+          }).catch(() => {});
+        }
+      } catch (e) { log(`Group join error: ${e.message}`); }
+    });
+
+  } catch (err) {
+    log(`❌ startBot error: ${err.message}`);
+    isConnecting = false;
+    reconnectTimer = setTimeout(startBot, 5_000);
+  }
+}
+
+// ─── WEB DASHBOARD ─────────────────────────────────────────────────────────
+
+app.get("/", (_req, res) => {
+  const rows = statusLogs.map(l =>
+    `<div class="log">${l.replace(/</g,"&lt;").replace(/>/g,"&gt;")}</div>`
+  ).join("");
+  res.send(`<!DOCTYPE html><html lang="en"><head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Bot Console</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#0c0c0c;color:#e0e0e0;font-family:'Segoe UI',sans-serif;padding:20px}
+    .wrap{max-width:900px;margin:auto}
+    h1{color:#25D366;text-align:center;padding:20px 0;border-bottom:2px solid #25D366;margin-bottom:20px}
+    .card{background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:20px;margin-bottom:20px;text-align:center}
+    .card h2{color:#25D366;font-size:1rem;word-break:break-all}
+    .btn{background:#ff4b2b;color:#fff;border:none;padding:10px 22px;border-radius:6px;cursor:pointer;font-weight:700;margin-top:12px;transition:.2s}
+    .btn:hover{background:#ff6b4b}
+    .term{background:#000;border-radius:10px;padding:16px;height:460px;overflow-y:auto;border:1px solid #333;font-family:'Courier New',monospace;font-size:.8rem}
+    .log{color:#00ff41;margin-bottom:5px;line-height:1.45}
+    footer{text-align:center;margin-top:16px;color:#555;font-size:.78rem}
+    ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-thumb{background:#25D366;border-radius:6px}
+  </style>
+</head><body>
+  <div class="wrap">
+    <h1>⚡ BOT CONSOLE</h1>
+    <div class="card">
+      <h2>${pairingDisplay}</h2>
+      <button class="btn" onclick="if(confirm('Delete session and restart?'))location.href='/reset-session'">🔄 Reset Session</button>
+    </div>
+    <div class="term">${rows}</div>
+    <footer>Production Edition · Node.js v20 · Baileys v6</footer>
+  </div>
+  <script>setTimeout(()=>location.reload(),12000)</script>
+</body></html>`);
+});
+
+app.get("/reset-session", (_req, res) => {
+  log("⚠️ Manual reset triggered.");
+  try {
+    const p = path.join(__dirname, "session");
+    if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true });
+    res.send(`<html><body style="background:#0c0c0c;color:#25D366;font-family:sans-serif;text-align:center;padding:60px">
+      <h2>Session deleted. Restarting…</h2>
+      <script>setTimeout(()=>location.href='/',5000)</script></body></html>`);
+    setTimeout(() => process.exit(0), 800);
+  } catch (e) { res.status(500).send("Error: " + e.message); }
+});
+
+// ─── START ──────────────────────────────────────────────────────────────────
+
+// ✅ Single entry point — startBot() called ONCE here, never again at bottom
+app.listen(PORT, () => {
+  log(`🌐 Console live on port ${PORT}`);
+  startBot();
+});
