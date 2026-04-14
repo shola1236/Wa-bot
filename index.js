@@ -33,7 +33,7 @@ const {
     proto
 } = require("@whiskeysockets/baileys");
 
-const { makeInMemoryStore: Store } = require('@whiskeysockets/baileys/lib/Store');
+// Store comes from the main baileys import above (makeInMemoryStore)
 
 // ── App Setup ─────────────────────────────────────────────────────────────────
 const app = express();
@@ -60,7 +60,7 @@ let webPairingCode  = "System Booting... Waiting for Pairing Engine.";
 let partnerAiJid    = null;   // which DM has auto-reply active
 let partnerAiActive = false;
 
-const store = Store({
+const store = makeInMemoryStore({
     logger: pino().child({ level: 'silent', stream: 'store' })
 });
 
