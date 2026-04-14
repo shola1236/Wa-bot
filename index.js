@@ -57,6 +57,8 @@ let webPairingCode  = "System Booting... Waiting for Pairing Engine.";
 // Only one partner active at a time — toggled by typing .aiauto on/off IN their DM
 let partnerAiJid    = null;   // which DM has auto-reply active
 let partnerAiActive = false;
+let globalSock      = null;   // reference to active socket for dashboard actions
+let currentQR       = null;   // latest QR string for web dashboard
 
 // makeInMemoryStore removed in Baileys 6.x — using lightweight message cache instead
 const msgCache = new Map();
@@ -99,7 +101,7 @@ async function askGemini(prompt, userJid, systemPrompt = null) {
 
         // ✅ FIXED: was gemini-pro on /v1/ — now gemini-1.5-flash on /v1beta/
         const response = await axios.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent?key=${GEMINI_KEY}`,
             { contents: [{ parts: [{ text: fullPrompt }] }] }
         );
 
@@ -144,7 +146,11 @@ async function startBot() {
 
     // ── Connection Handler ────────────────────────────────────────────────────
     sock.ev.on("connection.update", async (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
+        if (qr) {
+            currentQR = qr;
+            addLog("📷 QR Code ready — scan from dashboard or WhatsApp");
+        }
 
         if (connection === "close") {
             const reason = lastDisconnect?.error?.output?.statusCode;
@@ -184,14 +190,13 @@ async function startBot() {
 
     // ── Message Handler ───────────────────────────────────────────────────────
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
-        // ✅ FIX: Only process "notify" — prevents every command firing twice
+        // Only process "notify" — prevents Baileys firing handler twice per message
         if (type !== "notify") return;
 
         // Populate message cache for getMessage lookups
         for (const m of messages) {
             if (m.key?.id) msgCache.set(m.key.id, m);
         }
-        // Keep cache lean
         if (msgCache.size > 500) {
             const firstKey = msgCache.keys().next().value;
             msgCache.delete(firstKey);
@@ -201,6 +206,13 @@ async function startBot() {
             const msg = messages[0];
             if (!msg?.message) return;
             if (msg.key.remoteJid === 'status@broadcast') return;
+            // Suppress Baileys echo: bot's own sent messages come back as notify+fromMe
+            // Only allow fromMe through if it's a real dot command (owner controlling bot)
+            // This stops autoReply from triggering on the bot's own outgoing messages
+            if (msg.key.fromMe && !Object.keys(msg.message)[0]?.includes('protocol')) {
+                const rawText = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
+                if (!rawText.trim().startsWith('.')) return;
+            }
 
             const from     = msg.key.remoteJid;
             const isGroup  = from.endsWith("@g.us");
@@ -512,7 +524,30 @@ _Partner AI: ${partnerStatus}_
 }
 
 // ── Web Console ───────────────────────────────────────────────────────────────
+
+// Endpoint: request a fresh pairing code via the dashboard button
+app.get("/request-code", async (req, res) => {
+    try {
+        const cleanedNumber = BOT_NUMBER.replace(/[^0-9]/g, "");
+        addLog(`🔑 Dashboard: Requesting new pairing code for ${cleanedNumber}...`);
+        // sock is in outer scope via closure — reuse current socket
+        const code = await globalSock.requestPairingCode(cleanedNumber);
+        webPairingCode = `🔥 PAIR CODE: ${code}`;
+        addLog(`🔑 New Pairing Code: ${code}`);
+        res.json({ success: true, code });
+    } catch (e) {
+        addLog(`❌ Code request failed: ${e.message}`);
+        res.json({ success: false, error: e.message });
+    }
+});
+
+// Endpoint: get current logs as JSON (for live polling)
+app.get("/logs", (req, res) => {
+    res.json({ logs: statusLogs, status: webPairingCode, qr: currentQR });
+});
+
 app.get("/", (req, res) => {
+    const isPairingMode = !webPairingCode.includes("Online");
     res.send(`
     <!DOCTYPE html>
     <html lang="en">
@@ -521,29 +556,145 @@ app.get("/", (req, res) => {
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Bot Pro Console</title>
         <style>
-            body { background: #0c0c0c; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; }
-            .container { max-width: 1000px; margin: auto; }
-            .header { text-align: center; border-bottom: 2px solid #25D366; padding: 20px; }
-            .header h1 { color: #25D366; margin: 0; }
-            .status-box { background: #1a1a1a; padding: 20px; border-radius: 15px; text-align: center; margin: 20px 0; border: 1px solid #333; }
-            .status-box h2 { color: #25D366; margin: 0; }
-            .terminal { background: #000; border-radius: 10px; padding: 20px; height: 400px; overflow-y: auto; border: 1px solid #444; font-family: monospace; }
-            .log { margin-bottom: 8px; border-bottom: 1px solid #111; padding-bottom: 5px; color: #00ff41; font-size: 0.85em; }
-            .footer { text-align: center; margin-top: 30px; font-size: 0.8em; color: #555; }
-            ::-webkit-scrollbar { width: 8px; }
+            * { box-sizing: border-box; }
+            body { background: #0a0a0a; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; margin: 0; padding: 16px; }
+            .container { max-width: 900px; margin: auto; }
+            .header { text-align: center; border-bottom: 2px solid #25D366; padding: 16px; margin-bottom: 16px; }
+            .header h1 { color: #25D366; margin: 0; font-size: 1.4em; letter-spacing: 2px; }
+            .header p  { color: #555; margin: 4px 0 0; font-size: 0.75em; }
+            .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+            @media(max-width:600px){ .grid { grid-template-columns: 1fr; } }
+            .card { background: #141414; border: 1px solid #222; border-radius: 12px; padding: 16px; }
+            .card h3 { margin: 0 0 12px; color: #25D366; font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px; }
+            .status-text { font-size: 1em; font-weight: bold; color: #fff; word-break: break-all; line-height: 1.5; }
+            .status-text.online { color: #25D366; }
+            .status-text.code   { color: #FFD700; font-size: 1.6em; letter-spacing: 4px; }
+            .btn { display: inline-block; margin-top: 12px; padding: 8px 18px; background: #25D366; color: #000;
+                   border: none; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 0.85em; }
+            .btn:hover { background: #1da851; }
+            .btn.secondary { background: #1a1a1a; color: #25D366; border: 1px solid #25D366; margin-left: 8px; }
+            #qr-box { text-align: center; }
+            #qr-box img { width: 180px; height: 180px; border-radius: 8px; border: 2px solid #25D366; background: white; padding: 6px; }
+            #qr-box p { color: #555; font-size: 0.75em; margin: 6px 0 0; }
+            .terminal { background: #000; border-radius: 10px; padding: 16px; height: 360px; overflow-y: auto;
+                        border: 1px solid #1a1a1a; font-family: 'Courier New', monospace; font-size: 0.78em; }
+            .log { padding: 3px 0; border-bottom: 1px solid #0f0f0f; color: #00ff41; line-height: 1.4; }
+            .log.err { color: #ff4444; }
+            .log.warn { color: #FFD700; }
+            .footer { text-align: center; margin-top: 20px; font-size: 0.72em; color: #333; }
+            ::-webkit-scrollbar { width: 6px; }
             ::-webkit-scrollbar-thumb { background: #25D366; border-radius: 10px; }
+            .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: #25D366; animation: pulse 1.5s infinite; }
+            @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+            #toast { position: fixed; bottom: 20px; right: 20px; background: #25D366; color: #000;
+                     padding: 10px 18px; border-radius: 8px; font-weight: bold; display: none; z-index: 999; }
         </style>
     </head>
     <body>
+        <div id="toast"></div>
         <div class="container">
-            <div class="header"><h1>⚡ BOT PRO CONSOLE V4.2</h1></div>
-            <div class="status-box"><h2>${webPairingCode}</h2></div>
-            <div class="terminal">
-                ${statusLogs.map(l => `<div class="log">${l}</div>`).join('')}
+            <div class="header">
+                <h1>⚡ BOT PRO CONSOLE</h1>
+                <p>V4.2 · Baileys · Gemini 3.0 Flash · Node 20</p>
             </div>
-            <div class="footer">Built for Stability | Node.js v20+ | Baileys | Gemini 1.5</div>
+
+            <div class="grid">
+                <!-- Status / Pairing Card -->
+                <div class="card">
+                    <h3>🔌 Connection Status</h3>
+                    <div id="status-text" class="status-text">${webPairingCode}</div>
+                    ${isPairingMode ? `
+                    <br>
+                    <button class="btn" onclick="requestCode()">🔑 Generate New Code</button>
+                    ` : `
+                    <br>
+                    <span><span class="dot"></span><span style="color:#25D366;font-size:0.85em">Live & Connected</span></span>
+                    `}
+                </div>
+
+                <!-- QR Code Card -->
+                <div class="card" id="qr-box">
+                    <h3>📷 QR Code</h3>
+                    <div id="qr-img-wrap">
+                        <p style="color:#555;font-size:0.85em">QR code appears here when bot is in pairing mode.<br>Scan with WhatsApp → Linked Devices.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Live Terminal Logs -->
+            <div class="card" style="margin-bottom:16px">
+                <h3>📋 Live Logs <span style="float:right;font-size:0.8em;color:#555" id="log-time"></span></h3>
+                <div class="terminal" id="terminal">
+                    ${statusLogs.map(l => {
+                        const cls = l.includes('❌') ? 'err' : l.includes('⚠️') ? 'warn' : '';
+                        return `<div class="log ${cls}">${l}</div>`;
+                    }).join('')}
+                </div>
+            </div>
+
+            <div class="footer">Built for Stability · Render.com · Auto-refreshes every 5s</div>
         </div>
-        <script>setTimeout(() => location.reload(), 10000);</script>
+
+        <script>
+            function showToast(msg, err) {
+                const t = document.getElementById('toast');
+                t.textContent = msg;
+                t.style.background = err ? '#ff4444' : '#25D366';
+                t.style.display = 'block';
+                setTimeout(() => t.style.display = 'none', 3000);
+            }
+
+            async function requestCode() {
+                showToast('Requesting new pairing code...');
+                try {
+                    const r = await fetch('/request-code');
+                    const d = await r.json();
+                    if (d.success) {
+                        document.getElementById('status-text').textContent = '🔥 CODE: ' + d.code;
+                        document.getElementById('status-text').className = 'status-text code';
+                        showToast('✅ Code: ' + d.code);
+                    } else {
+                        showToast('❌ ' + d.error, true);
+                    }
+                } catch(e) {
+                    showToast('❌ Request failed', true);
+                }
+            }
+
+            // Live poll every 5 seconds
+            async function pollLogs() {
+                try {
+                    const r = await fetch('/logs');
+                    const d = await r.json();
+
+                    // Update status
+                    const st = document.getElementById('status-text');
+                    if (st) st.textContent = d.status;
+
+                    // Update terminal
+                    const term = document.getElementById('terminal');
+                    if (term && d.logs) {
+                        term.innerHTML = d.logs.map(l => {
+                            const cls = l.includes('❌') ? 'err' : l.includes('⚠️') ? 'warn' : '';
+                            return '<div class="log ' + cls + '">' + l + '</div>';
+                        }).join('');
+                        term.scrollTop = 0;
+                    }
+
+                    // Update QR if available
+                    const qrWrap = document.getElementById('qr-img-wrap');
+                    if (d.qr && qrWrap) {
+                        qrWrap.innerHTML = '<img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(d.qr) + '" alt="QR Code" /><p>Scan in WhatsApp → Linked Devices</p>';
+                    }
+
+                    // Update log time
+                    document.getElementById('log-time').textContent = new Date().toLocaleTimeString();
+                } catch(e) {}
+            }
+
+            setInterval(pollLogs, 5000);
+            pollLogs();
+        </script>
     </body>
     </html>
     `);
