@@ -102,7 +102,8 @@ async function askGemini(prompt, userJid, systemPrompt = null) {
         // ✅ FIXED: was gemini-pro on /v1/ — now gemini-1.5-flash on /v1beta/
         const response = await axios.post(
             `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${GEMINI_KEY}`,
-            { contents: [{ parts: [{ text: fullPrompt }] }] }
+            { contents: [{ parts: [{ text: fullPrompt }] }] },
+            { headers: { "Content-Type": "application/json" } } // ✅ FIX 3: explicit header prevents 400 on Render
         );
 
         const aiText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -141,6 +142,8 @@ async function startBot() {
             return cached?.message || { conversation: "placeholder" };
         }
     });
+
+    globalSock = sock; // ✅ FIX 1: assign so /request-code endpoint can use it
 
     sock.ev.on("creds.update", saveCreds);
 
@@ -264,7 +267,7 @@ Do NOT reveal you are an AI. Do NOT be overly formal. Keep replies short and hum
             }
 
             // ── General autoReply (owner talking to self) ─────────────────────
-            if (!command.startsWith(".") && autoReplyActive && isFromMe && cleanText.length > 2) {
+            if (!command.startsWith(".") && autoReplyActive && isFromMe && cleanText.length > 2 && from !== partnerAiJid) { // ✅ FIX 2: don't fire in partner's DM
                 const aiRes = await askGemini(cleanText, from);
                 return await sock.sendMessage(from, { text: `🧠 *Assistant:* ${aiRes}` });
             }
