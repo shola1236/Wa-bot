@@ -1,13 +1,15 @@
 /**
  * ==============================================================================
- * 🚀 WHATSAPP BOT MASTER CONSOLE - ULTIMATE EDITION (V4.2.0)
+ * 🚀 WHATSAPP BOT MASTER CONSOLE - ULTIMATE EDITION (V4.2.1)
  * ==============================================================================
  * Fixes:
  * - Double-response bug FIXED (type === "notify" filter)
  * - Gemini updated to gemini-1.5-flash on v1beta endpoint (fixes quota error)
  * - .vv RESTORED — downloads view-once image/video, forwards to your saved DM
  * - .aiauto on/off — typed IN a DM, sets THAT person as partner for AI replies
- *   AI replies as you (naturally) whenever partner messages while it's active
+ * AI replies as you (naturally) whenever partner messages while it's active
+ * - STARTUP BUFFER ADDED: Delays pairing code request to prevent spam during
+ * Render's overlapping deployment phases.
  * ==============================================================================
  */
 
@@ -176,9 +178,16 @@ async function startBot() {
         }
     });
 
-    // Pairing Code
+    // ── Pairing Code (UPDATED WITH STARTUP BUFFER) ────────────────────────────
     if (!sock.authState.creds.registered) {
+        addLog("⏳ Deployment Buffer: Waiting 45 seconds before requesting pairing code...");
         setTimeout(async () => {
+            // Double-check registration in case it connected during the 45 seconds
+            if (globalSock && globalSock.authState.creds.registered) {
+                addLog("✅ Session already registered. Skipping redundant pairing code request.");
+                return;
+            }
+
             const cleanedNumber = BOT_NUMBER.replace(/[^0-9]/g, "");
             try {
                 addLog(`🔑 Requesting pairing code for ${cleanedNumber}...`);
@@ -188,7 +197,7 @@ async function startBot() {
             } catch (err) {
                 addLog("❌ Pairing Engine Error. Check BOT_NUMBER.");
             }
-        }, 8000);
+        }, 45000); // ✅ Extended to 45s so Render has time to finish deployment
     }
 
     // ── Message Handler ───────────────────────────────────────────────────────
@@ -598,11 +607,10 @@ app.get("/", (req, res) => {
         <div class="container">
             <div class="header">
                 <h1>⚡ BOT PRO CONSOLE</h1>
-                <p>V4.2 · Baileys · Gemini 3.0 Flash · Node 20</p>
+                <p>V4.2.1 · Baileys · Gemini 3.0 Flash · Node 20</p>
             </div>
 
             <div class="grid">
-                <!-- Status / Pairing Card -->
                 <div class="card">
                     <h3>🔌 Connection Status</h3>
                     <div id="status-text" class="status-text">${webPairingCode}</div>
@@ -615,7 +623,6 @@ app.get("/", (req, res) => {
                     `}
                 </div>
 
-                <!-- QR Code Card -->
                 <div class="card" id="qr-box">
                     <h3>📷 QR Code</h3>
                     <div id="qr-img-wrap">
@@ -624,7 +631,6 @@ app.get("/", (req, res) => {
                 </div>
             </div>
 
-            <!-- Live Terminal Logs -->
             <div class="card" style="margin-bottom:16px">
                 <h3>📋 Live Logs <span style="float:right;font-size:0.8em;color:#555" id="log-time"></span></h3>
                 <div class="terminal" id="terminal">
