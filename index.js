@@ -101,7 +101,7 @@ async function askGemini(prompt, userJid, systemPrompt = null) {
 
         // ✅ FIXED: was gemini-pro on /v1/ — now gemini-1.5-flash on /v1beta/
         const response = await axios.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent?key=${GEMINI_KEY}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${GEMINI_KEY}`,
             { contents: [{ parts: [{ text: fullPrompt }] }] }
         );
 
