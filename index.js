@@ -28,12 +28,10 @@ const {
     generateWAMessageFromContent,
     generateMessageID,
     downloadContentFromMessage,
-    makeInMemoryStore,
     jidNormalizedUser,
     proto
 } = require("@whiskeysockets/baileys");
 
-// Store comes from the main baileys import above (makeInMemoryStore)
 
 // ── App Setup ─────────────────────────────────────────────────────────────────
 const app = express();
@@ -60,9 +58,8 @@ let webPairingCode  = "System Booting... Waiting for Pairing Engine.";
 let partnerAiJid    = null;   // which DM has auto-reply active
 let partnerAiActive = false;
 
-const store = makeInMemoryStore({
-    logger: pino().child({ level: 'silent', stream: 'store' })
-});
+// makeInMemoryStore removed in Baileys 6.x — using lightweight message cache instead
+const msgCache = new Map();
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 function decodeJid(jid) {
@@ -138,15 +135,11 @@ async function startBot() {
         keepAliveIntervalMs: 30000,
         generateHighQualityLinkPreview: true,
         getMessage: async (key) => {
-            if (store) {
-                const msg = await store.loadMessage(key.remoteJid, key.id);
-                return msg?.message || undefined;
-            }
-            return { conversation: "Hello" };
+            const cached = msgCache.get(key.id);
+            return cached?.message || { conversation: "placeholder" };
         }
     });
 
-    store.bind(sock.ev);
     sock.ev.on("creds.update", saveCreds);
 
     // ── Connection Handler ────────────────────────────────────────────────────
@@ -193,6 +186,16 @@ async function startBot() {
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
         // ✅ FIX: Only process "notify" — prevents every command firing twice
         if (type !== "notify") return;
+
+        // Populate message cache for getMessage lookups
+        for (const m of messages) {
+            if (m.key?.id) msgCache.set(m.key.id, m);
+        }
+        // Keep cache lean
+        if (msgCache.size > 500) {
+            const firstKey = msgCache.keys().next().value;
+            msgCache.delete(firstKey);
+        }
 
         try {
             const msg = messages[0];
